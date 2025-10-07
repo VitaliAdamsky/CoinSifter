@@ -337,5 +337,5 @@ async def health_check():
 # --- Точка входа для Uvicorn (для локального теста) ---
 if __name__ == "__main__":
     # Эта часть не используется при запуске на Render
-    logging.info("Для локального запуска сервера используйте команду: uvicorn main:app --reload")
+    logging.info("Для локального запуска сервера используйте команду: uvicorn main:app ---reload")
 
