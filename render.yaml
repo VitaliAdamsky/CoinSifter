@@ -1,31 +1,29 @@
-# Конфигурация для Render: База данных + Веб-сервис
+# Blueprint for Render Deployment
+# This file tells Render how to build and run the project.
 
 services:
-  # Сервис №1: Веб-сервис для выполнения основной работы
+  # Service #1: The Python Web Server (FastAPI)
   - type: web
     name: coin-sifter-server
-    plan: free # Используем бесплатный тариф
-    region: frankfurt # Сервер в Европе для обхода блокировок
     env: python
+    plan: free # Use the free instance type
+    region: frankfurt # Deploy in Europe to avoid geo-blocking
     buildCommand: "pip install -r requirements.txt"
-    # Запускаем веб-сервер Uvicorn, который будет слушать входящие запросы
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
-    healthCheckPath: /health # Render будет проверять этот адрес, чтобы знать, что сервис жив
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: coin-sifter-db
           property: connectionString
       - key: PYTHON_VERSION
-        value: 3.12.0
+        value: "3.12.0"
       - key: SECRET_TOKEN
-        generateValue: true # Render сам сгенерирует надежный секретный ключ
+        generateValue: true # Render will automatically generate a secure secret key
 
-  # Сервис №2: База данных
+  # Service #2: The PostgreSQL Database
   - type: pserv
     name: coin-sifter-db
-    plan: free
+    plan: free # Use the free database plan
     region: frankfurt
-    databaseName: coinsifterdb
-    user: coinsifter_user
 
