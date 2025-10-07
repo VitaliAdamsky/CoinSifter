@@ -3,7 +3,7 @@
 
 services:
   # 1. База данных PostgreSQL для хранения результатов
-  - type: pserv
+  - type: psql # ИСПРАВЛЕНО: pserv -> psql
     name: coin-sifter-db
     # Используем PostgreSQL
     databaseName: coinsifterdb
@@ -34,5 +34,4 @@ services:
           property: internalConnectionString
       - key: PYTHON_VERSION
         value: 3.11.5 # Укажите версию Python, которую вы используете
-
 
