@@ -72,16 +72,19 @@ def calculate_entropy(series, bins=10):
 
 # --- АСИНХРОННЫЕ СЛУЖЕБНЫЕ ФУНКЦИИ ---
 async def initialize_exchange(exchange_name):
+    """Инициализирует биржу с правильными опциями для обхода геоблокировок."""
     logging.info(f"Инициализация биржи {exchange_name}...")
     try:
-        exchange_map = {'binance': ccxt.binanceusdm, 'bybit': ccxt.bybit}
-        exchange_class = exchange_map.get(exchange_name)
-        if not exchange_class:
+        exchange = None
+        if exchange_name == 'binance':
+            # Используем общий класс binance с опцией для фьючерсов, это более устойчиво к блокировкам
+            exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+        elif exchange_name == 'bybit':
+            exchange = ccxt.bybit({'options': {'defaultType': 'swap'}})
+        else:
             logging.warning(f"Биржа '{exchange_name}' не поддерживается.")
             return None
         
-        options = {'options': {'defaultType': 'swap'}} if exchange_name == 'bybit' else {}
-        exchange = exchange_class(options)
         exchange.options['httpRequestTimeout'] = 30000
         return exchange
     except Exception as e:
