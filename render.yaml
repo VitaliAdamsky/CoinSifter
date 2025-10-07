@@ -14,7 +14,7 @@ services:
   # Cron Job (периодическая задача) для запуска скрипта
   - type: cron
     name: coin-sifter-job
-    plan: free
+    plan: starter # ИСПРАВЛЕНО: Cron Jobs не могут использовать бесплатный план
     region: frankfurt
     # Указываем, что это Python-проект
     env: python
@@ -29,8 +29,8 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: coin-sifter-db # Эта ссылка теперь правильно указывает на базу данных из раздела `databases`
-          property: internalConnectionString
+          name: coin-sifter-db
+          property: connectionString # ИСПРАВЛЕНО: Используем стандартную строку подключения
       - key: PYTHON_VERSION
         value: 3.11.5 # Укажите версию Python, которую вы используете
 
