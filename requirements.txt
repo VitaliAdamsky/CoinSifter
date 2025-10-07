@@ -1,6 +1,6 @@
 ccxt==4.3.50
 pandas==2.2.2
-pandas-ta==0.4.67b0
+pandas-ta-classic==0.3.14b
 psycopg2-binary==2.9.9
 requests==2.32.3
 hurst==0.0.5
