@@ -1,0 +1,38 @@
+# Этот файл автоматически запускает ваш Python-скрипт раз в месяц
+
+name: Monthly Coin Sifter
+
+on:
+  # Запускать по расписанию
+  schedule:
+    # "0 2 1 * *" означает "в 02:00 ночи 1-го числа каждого месяца" (по UTC)
+    - cron: '0 2 1 * *'
+  # Также позволяет запускать вручную со страницы Actions в GitHub
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Скачиваем код из репозитория
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      # 2. Устанавливаем Python нужной версии
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # 3. Устанавливаем все необходимые библиотеки
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. Запускаем основной скрипт
+      - name: Run the main script
+        env:
+          # Используем DATABASE_URL, который вы добавите в секреты GitHub
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python main.py
