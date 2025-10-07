@@ -9,7 +9,7 @@ import asyncio
 from tqdm.asyncio import tqdm
 from hurst import compute_Hc
 from scipy.stats import skew
-import numpy as np # <-- Добавлен для энтропии
+import numpy as np
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from ccxt.base.errors import RateLimitExceeded, NetworkError, ExchangeError
@@ -26,10 +26,24 @@ ANALYSIS_PERIOD_DAYS = 90
 HURST_TIMEFRAMES = ['4h', '8h', '12h', '1d']
 ATR_PERIOD = 14
 BTC_SYMBOL = 'BTC/USDT'
-CONCURRENT_REQUEST_LIMIT = 10 
+CONCURRENT_REQUEST_LIMIT = 10
 RETRY_ATTEMPTS = 3
 RETRY_WAIT_MIN = 1
 RETRY_WAIT_MAX = 10
+
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
+def load_blacklist():
+    """Загружает черный список монет из файла blacklist.json."""
+    try:
+        with open(BLACKLIST_FILE, 'r') as f:
+            logging.info(f"Черный список {BLACKLIST_FILE} успешно загружен.")
+            return json.load(f)
+    except FileNotFoundError:
+        logging.warning(f"Файл {BLACKLIST_FILE} не найден, используется пустой черный список.")
+        return []
+    except json.JSONDecodeError:
+        logging.error(f"Ошибка чтения файла {BLACKLIST_FILE}. Файл может быть поврежден. Используется пустой черный список.")
+        return []
 
 # --- НАДЕЖНЫЕ ОБЕРТКИ ДЛЯ ЗАПРОСОВ ---
 RETRYABLE_EXCEPTIONS = (RateLimitExceeded, NetworkError, ExchangeError)
@@ -140,49 +154,55 @@ async def analyze_single_coin(coin_data, exchange, btc_data, semaphore):
         
         responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
     
-    ohlcv_1d = responses[0]
-    if not isinstance(ohlcv_1d, Exception) and len(ohlcv_1d) >= ANALYSIS_PERIOD_DAYS:
-        df_ohlcv_1d = pd.DataFrame(ohlcv_1d, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+    ohlcv_1d_response = responses[0]
+    if not isinstance(ohlcv_1d_response, Exception) and ohlcv_1d_response is not None and len(ohlcv_1d_response) >= ANALYSIS_PERIOD_DAYS:
+        df_ohlcv_1d = pd.DataFrame(ohlcv_1d_response, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         df_analysis = df_ohlcv_1d.tail(ANALYSIS_PERIOD_DAYS).copy()
         daily_returns = df_analysis['c'].pct_change().dropna()
         
         # Основные метрики
-        # ... (существующие расчеты)
         last_close = df_ohlcv_1d['c'].iloc[-1]
         if last_close > 0:
             df_ohlcv_1d.ta.atr(length=ATR_PERIOD, append=True)
             last_atr = df_ohlcv_1d[f'ATRr_{ATR_PERIOD}'].iloc[-1]
-            result_row['volatility_index'] = round((last_atr / last_close) * 100, 4)
+            result_row['volatility_index'] = round((last_atr / last_close) * 100, 4) if pd.notna(last_atr) else None
+        
         net_change = abs(df_analysis['c'].iloc[-1] - df_analysis['c'].iloc[0])
         total_movement = (df_analysis['c'].diff().abs()).sum()
         if total_movement > 0: result_row['efficiency_index'] = round(net_change / total_movement, 4)
+        
         is_uptrend = df_analysis['c'].iloc[-1] > df_analysis['c'].iloc[0]
         df_analysis['move'] = (df_analysis['c'] - df_analysis['o']).abs()
         df_analysis['is_impulse'] = (df_analysis['c'] > df_analysis['o']) if is_uptrend else (df_analysis['c'] < df_analysis['o'])
         impulse_strength = df_analysis[df_analysis['is_impulse']]['move'].sum()
         total_strength = df_analysis['move'].sum()
         if total_strength > 0: result_row['trend_harmony_index'] = round(impulse_strength / total_strength, 4)
-        if btc_data and len(daily_returns) == len(btc_data['returns']):
+        
+        if btc_data and 'returns' in btc_data and len(daily_returns) == len(btc_data['returns']):
             result_row['btc_correlation'] = round(daily_returns.corr(btc_data['returns']), 4)
             if btc_data['perf'] > 0:
                 coin_perf = (df_analysis['c'].iloc[-1] / df_analysis['c'].iloc[0])
                 result_row['relative_strength_vs_btc'] = round(coin_perf / btc_data['perf'], 4)
         
-        total_range = (df_analysis['h'] - df_analysis['l']); body_size = (df_analysis['c'] - df_analysis['o']).abs(); wick_size = total_range - body_size
+        total_range = (df_analysis['h'] - df_analysis['l'])
+        body_size = (df_analysis['c'] - df_analysis['o']).abs()
+        wick_size = total_range - body_size
         result_row['avg_wick_ratio'] = round((wick_size / total_range.replace(0, 1)).mean(), 4)
-        roll_max = df_analysis['h'].cummax(); drawdown = (df_analysis['l'] - roll_max) / roll_max
+        
+        roll_max = df_analysis['h'].cummax()
+        drawdown = (df_analysis['l'] - roll_max) / roll_max
         result_row['max_drawdown_percent'] = round(drawdown.min() * 100, 2)
 
         # Новые поведенческие и статистические метрики
         if not daily_returns.empty:
             result_row['returns_skewness'] = round(skew(daily_returns), 4)
-            result_row['kurtosis'] = round(daily_returns.kurtosis(), 4) # Эксцесс Фишера (нормальное = 0)
+            result_row['kurtosis'] = round(daily_returns.kurtosis(), 4)
             result_row['autocorrelation'] = round(daily_returns.autocorr(lag=1), 4)
             result_row['entropy'] = calculate_entropy(daily_returns)
 
     for i, tf in enumerate(HURST_TIMEFRAMES):
         ohlcv_hurst = responses[i+1]
-        if not isinstance(ohlcv_hurst, Exception) and len(ohlcv_hurst) > 100:
+        if not isinstance(ohlcv_hurst, Exception) and ohlcv_hurst is not None and len(ohlcv_hurst) > 100:
             close_prices = [candle[4] for candle in ohlcv_hurst]
             H, _, _ = compute_Hc(close_prices, kind='price', simplified=True)
             result_row[f'hurst_{tf}'] = round(H, 4)
@@ -204,8 +224,11 @@ async def analyze_and_enhance_data(df, exchanges_map):
             try:
                 limit_1d = get_candles_for_period(ANALYSIS_PERIOD_DAYS, '1d', exchange)
                 btc_ohlcv = await fetch_with_retry(exchange.fetch_ohlcv, BTC_SYMBOL, '1d', limit=limit_1d)
-                df_btc = pd.DataFrame(btc_ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                btc_data_cache[primary_exchange_id] = {'returns': df_btc['c'].pct_change().dropna(), 'perf': (df_btc['c'].iloc[-1] / df_btc['c'].iloc[0])}
+                if btc_ohlcv:
+                    df_btc = pd.DataFrame(btc_ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+                    btc_data_cache[primary_exchange_id] = {'returns': df_btc['c'].pct_change().dropna(), 'perf': (df_btc['c'].iloc[-1] / df_btc['c'].iloc[0])}
+                else:
+                    btc_data_cache[primary_exchange_id] = None
             except Exception as e:
                 logging.error(f"Не удалось загрузить данные по BTC с {primary_exchange_id} после нескольких попыток: {e}")
                 btc_data_cache[primary_exchange_id] = None
@@ -241,14 +264,26 @@ def save_to_database(data_df):
         cursor = conn.cursor()
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS monthly_coin_selection (
-            id SERIAL PRIMARY KEY, symbol VARCHAR(50) UNIQUE NOT NULL, exchanges VARCHAR(50)[], category INTEGER, 
-            logoUrl VARCHAR(100), volatility_index NUMERIC(10, 4), hurst_4h NUMERIC(10, 4), 
-            hurst_8h NUMERIC(10, 4), hurst_12h NUMERIC(10, 4), hurst_1d NUMERIC(10, 4), 
-            efficiency_index NUMERIC(10, 4), trend_harmony_index NUMERIC(10, 4), 
-            btc_correlation NUMERIC(10, 4), returns_skewness NUMERIC(10, 4), 
-            avg_wick_ratio NUMERIC(10, 4), relative_strength_vs_btc NUMERIC(10, 4), 
-            max_drawdown_percent NUMERIC(10, 2), entropy NUMERIC(10, 4), 
-            kurtosis NUMERIC(10, 4), autocorrelation NUMERIC(10, 4),
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(50) UNIQUE NOT NULL,
+            exchanges VARCHAR(50)[],
+            category INTEGER,
+            logoUrl VARCHAR(100),
+            volatility_index NUMERIC(10, 4),
+            hurst_4h NUMERIC(10, 4),
+            hurst_8h NUMERIC(10, 4),
+            hurst_12h NUMERIC(10, 4),
+            hurst_1d NUMERIC(10, 4),
+            efficiency_index NUMERIC(10, 4),
+            trend_harmony_index NUMERIC(10, 4),
+            btc_correlation NUMERIC(10, 4),
+            returns_skewness NUMERIC(10, 4),
+            avg_wick_ratio NUMERIC(10, 4),
+            relative_strength_vs_btc NUMERIC(10, 4),
+            max_drawdown_percent NUMERIC(10, 2),
+            entropy NUMERIC(10, 4),
+            kurtosis NUMERIC(10, 4),
+            autocorrelation NUMERIC(10, 4),
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
         );""")
         logging.info("Очистка старых данных...")
@@ -265,7 +300,6 @@ def save_to_database(data_df):
 
 async def main():
     logging.info("Запуск ежемесячного скрипта отбора фьючерсов...")
-    # ... (остальная часть main остается без изменений)
     blacklist = load_blacklist()
     
     init_tasks = [initialize_exchange(name) for name in EXCHANGES_TO_PROCESS]
@@ -300,7 +334,7 @@ async def main():
     
     logging.info("Скрипт успешно завершил работу.")
 
-
 if __name__ == "__main__":
     asyncio.run(main())
+
 
