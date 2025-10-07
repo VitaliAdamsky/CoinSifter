@@ -1,8 +1,14 @@
 # Blueprint for Render Deployment
 # This file tells Render how to build and run the project.
 
+databases:
+  # The PostgreSQL Database
+  - name: coin-sifter-db
+    plan: free # Use the free database plan
+    region: frankfurt
+
 services:
-  # Service #1: The Python Web Server (FastAPI)
+  # The Python Web Server (FastAPI)
   - type: web
     name: coin-sifter-server
     env: python
@@ -19,11 +25,5 @@ services:
       - key: PYTHON_VERSION
         value: "3.12.0"
       - key: SECRET_TOKEN
-        generateValue: true # Render will automatically generate a secure secret key
-
-  # Service #2: The PostgreSQL Database
-  - type: pserv
-    name: coin-sifter-db
-    plan: free # Use the free database plan
-    region: frankfurt
+        generateValue: true # Render will automatically generate a secure secret key А
 
