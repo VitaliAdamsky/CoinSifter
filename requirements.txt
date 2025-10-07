@@ -6,4 +6,4 @@ requests==2.32.3
 hurst==0.0.5
 scipy==1.13.1
 tenacity==8.3.0
-numpy==1.26.4
+numpy
