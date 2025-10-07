@@ -1,7 +1,7 @@
 import os
 import ccxt.async_support as ccxt
 import pandas as pd
-import pandas_ta as ta
+import pandas_ta_classic as ta
 import json
 import psycopg2
 from psycopg2.extras import execute_values
