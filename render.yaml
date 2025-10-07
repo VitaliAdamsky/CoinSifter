@@ -1,36 +1,11 @@
 # Файл конфигурации "инфраструктура как код" для Render.
-# Он автоматически создает все необходимые сервисы.
+# Он создает ТОЛЬКО бесплатную базу данных.
 
 # Раздел для баз данных
 databases:
   - name: coin-sifter-db
     databaseName: coinsifterdb
     user: coinsifter_user
-    plan: free
+    plan: free # База данных остается на бесплатном плане
     region: frankfurt
-
-# Раздел для сервисов (приложений, cron job и т.д.)
-services:
-  # Cron Job (периодическая задача) для запуска скрипта
-  - type: cron
-    name: coin-sifter-job
-    plan: starter # ИСПРАВЛЕНО: Cron Jobs не могут использовать бесплатный план
-    region: frankfurt
-    # Указываем, что это Python-проект
-    env: python
-    # Команда для установки зависимостей перед каждым запуском
-    buildCommand: "pip install -r requirements.txt"
-    # Основная команда для запуска вашего скрипта
-    startCommand: "python main.py"
-    # Расписание запуска. "0 2 1 * *" означает "в 02:00 ночи 1-го числа каждого месяца"
-    # Формат: Минута Час День Месяц День_недели
-    schedule: "0 2 1 * *"
-    # Переменные окружения для скрипта
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: coin-sifter-db
-          property: connectionString # ИСПРАВЛЕНО: Используем стандартную строку подключения
-      - key: PYTHON_VERSION
-        value: 3.11.5 # Укажите версию Python, которую вы используете
 
