@@ -33,7 +33,6 @@ SECRET_TOKEN = os.getenv("SECRET_TOKEN")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Используем биржи, лояльные к европейским серверам
 EXCHANGES_TO_PROCESS = ['binance', 'bybit'] 
 MIN_DAILY_VOLUME_USDT = 3_000_000
 VOLUME_CATEGORIES = 6
@@ -90,7 +89,6 @@ async def initialize_exchange(exchange_name):
     """Инициализирует биржу с правильными опциями."""
     logging.info(f"Инициализация биржи {exchange_name}...")
     try:
-        # Возвращаем binance в список поддерживаемых бирж
         exchange_map = {'binance': ccxt.binance, 'bybit': ccxt.bybit}
         exchange_class = exchange_map.get(exchange_name)
         if not exchange_class:
@@ -108,7 +106,7 @@ async def initialize_exchange(exchange_name):
 # --- ЧАСТЬ 4: ГЛАВНАЯ ЛОГИКА АНАЛИЗА ---
 
 async def run_analysis_logic():
-    """Содержит всю основную логику анализа, которая раньше была в main()."""
+    """Содержит всю основную логику анализа."""
     logging.info("Запуск анализа по триггеру...")
     
     blacklist = load_blacklist()
@@ -199,9 +197,14 @@ async def run_analysis_logic():
             
             last_close = df_ohlcv_1d['close'].iloc[-1]
             if last_close > 0:
-                df_ohlcv_1d.ta.atr(length=ATR_PERIOD, append=True)
-                last_atr = df_ohlcv_1d[f'ATR_{ATR_PERIOD}'].iloc[-1]
-                result_row['volatility_index'] = round((last_atr / last_close) * 100, 4) if pd.notna(last_atr) else None
+                # ----- ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ ЗДЕСЬ -----
+                # Шаг 1: Рассчитываем ATR и сохраняем результат в переменную
+                atr_series = df_ohlcv_1d.ta.atr(length=ATR_PERIOD)
+                # Шаг 2: Явно добавляем этот результат как новую колонку
+                if atr_series is not None and not atr_series.empty:
+                    df_ohlcv_1d[f'ATR_{ATR_PERIOD}'] = atr_series
+                    last_atr = df_ohlcv_1d[f'ATR_{ATR_PERIOD}'].iloc[-1]
+                    result_row['volatility_index'] = round((last_atr / last_close) * 100, 4) if pd.notna(last_atr) else None
 
             if not daily_returns.empty:
                 result_row['returns_skewness'] = round(skew(daily_returns), 4)
