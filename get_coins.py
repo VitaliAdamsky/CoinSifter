@@ -11,7 +11,7 @@ def fetch_data_from_db():
     Подключается к базе данных, извлекает все данные из таблицы 
     monthly_coin_selection и сохраняет их в CSV-файл.
     """
-    db_url = "postgresql://coinsifter_user:WqLwRlVuVmv5kP3k54xfqyQizVHnjguT@dpg-d3ihp21r0fns73ctiv00-a.frankfurt-postgres.render.com/coinsifterdb"
+    db_url = "postgresql://coin_sifter_db_43u4_user:o2JLzcpHrsZC7lBBOQDpDVLhWQxTL1H7@dpg-d3jodet6ubrc73d0h4dg-a.frankfurt-postgres.render.com/coin_sifter_db_43u4"
     
     if not db_url:
         logging.error("Ошибка: Переменная окружения DATABASE_URL не установлена.")

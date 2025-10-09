@@ -352,8 +352,6 @@ async def run_analysis_logic():
                 conn = psycopg2.connect(db_url)
                 cursor = conn.cursor()
                 
-                # --- ИЗМЕНЕНИЕ: Создание таблицы и колонок отдельно ---
-                # Создаём таблицу, если её нет
                 create_table_query = """
                 CREATE TABLE IF NOT EXISTS monthly_coin_selection (
                     id SERIAL PRIMARY KEY,
@@ -363,15 +361,11 @@ async def run_analysis_logic():
                 """
                 cursor.execute(create_table_query)
 
-                # Добавляем колонки, если их нет
                 for col, col_type in column_types.items():
                     cursor.execute(f'ALTER TABLE monthly_coin_selection ADD COLUMN IF NOT EXISTS "{col}" {col_type};')
                 
-                # Фиксируем изменения схемы
                 conn.commit()
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-                # Теперь вставляем данные в отдельной транзакции
                 update_cols = [f'"{col}" = EXCLUDED."{col}"' for col in final_columns if col != 'symbol']
                 upsert_query = f"""
                 INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)})
@@ -383,12 +377,12 @@ async def run_analysis_logic():
                 data_to_insert = [tuple(row) for row in data_df.reindex(columns=final_columns).where(pd.notna(data_df), None).to_numpy()]
                 if data_to_insert:
                     execute_values(cursor, upsert_query, data_to_insert)
-                    conn.commit()  # <-- Вот тут фиксируем данные
+                    conn.commit()
                     logging.info(f"Успешно сохранено/обновлено {len(data_to_insert)} записей.")
             except Exception as e:
                 logging.error(f"Ошибка при работе с базой данных: {e}")
                 if conn:
-                    conn.rollback()  # <-- Откатываем данные, если ошибка
+                    conn.rollback()
             finally:
                 if conn: conn.close()
         
@@ -404,7 +398,25 @@ async def run_analysis_logic():
         enhanced_df = await analyze_and_enhance_data(df, exchanges_map)
         
         if not enhanced_df.empty:
-            save_to_database(enhanced_df)
+            initial_count = len(enhanced_df)
+            
+            # Сначала убираем монеты с неполными ключевыми данными для фильтрации
+            key_filter_columns = ['volatility_index', 'hurst_1d', 'efficiency_index']
+            clean_df = enhanced_df.dropna(subset=key_filter_columns).copy()
+            
+            # Применяем согласованные фильтры "шлака"
+            condition_hurst = ~clean_df['hurst_1d'].between(0.45, 0.55)
+            condition_volatility = clean_df['volatility_index'] > 1.0
+            condition_efficiency = clean_df['efficiency_index'] > 0.1
+            
+            final_df = clean_df[condition_hurst & condition_volatility & condition_efficiency]
+            
+            filtered_count = initial_count - len(final_df)
+            
+            if filtered_count > 0:
+                logging.info(f"Финальная фильтрация завершена: {filtered_count} монет(ы) были отсеяны как 'шлак'.")
+            
+            save_to_database(final_df)
 
     finally:
         logging.info("Закрытие всех соединений с биржами...")
