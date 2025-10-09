@@ -34,7 +34,7 @@ SECRET_TOKEN = os.getenv("SECRET_TOKEN")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Используем биржи, лояльные к европейским серверам
-EXCHANGES_TO_PROCESS = ['okx', 'bybit'] 
+EXCHANGES_TO_PROCESS = ['binance', 'bybit'] 
 MIN_DAILY_VOLUME_USDT = 3_000_000
 VOLUME_CATEGORIES = 6
 BLACKLIST_FILE = 'blacklist.json'
@@ -90,7 +90,8 @@ async def initialize_exchange(exchange_name):
     """Инициализирует биржу с правильными опциями."""
     logging.info(f"Инициализация биржи {exchange_name}...")
     try:
-        exchange_map = {'okx': ccxt.okx, 'bybit': ccxt.bybit}
+        # Возвращаем binance в список поддерживаемых бирж
+        exchange_map = {'binance': ccxt.binance, 'bybit': ccxt.bybit}
         exchange_class = exchange_map.get(exchange_name)
         if not exchange_class:
             logging.warning(f"Биржа '{exchange_name}' не поддерживается.")
@@ -191,11 +192,12 @@ async def run_analysis_logic():
         
         ohlcv_1d = responses[0]
         if not isinstance(ohlcv_1d, Exception) and len(ohlcv_1d) >= ANALYSIS_PERIOD_DAYS:
-            df_ohlcv_1d = pd.DataFrame(ohlcv_1d, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            df_analysis = df_ohlcv_1d.tail(ANALYSIS_PERIOD_DAYS).copy()
-            daily_returns = df_analysis['c'].pct_change().dropna()
+            df_ohlcv_1d = pd.DataFrame(ohlcv_1d, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            last_close = df_ohlcv_1d['c'].iloc[-1]
+            df_analysis = df_ohlcv_1d.tail(ANALYSIS_PERIOD_DAYS).copy()
+            daily_returns = df_analysis['close'].pct_change().dropna()
+            
+            last_close = df_ohlcv_1d['close'].iloc[-1]
             if last_close > 0:
                 df_ohlcv_1d.ta.atr(length=ATR_PERIOD, append=True)
                 last_atr = df_ohlcv_1d[f'ATR_{ATR_PERIOD}'].iloc[-1]
@@ -207,17 +209,17 @@ async def run_analysis_logic():
                 result_row['kurtosis'] = round(daily_returns.kurtosis(), 4)
                 result_row['autocorrelation'] = round(daily_returns.autocorr(), 4)
 
-                change = df_analysis['c'].diff().abs().sum()
-                net_change = abs(df_analysis['c'].iloc[-1] - df_analysis['c'].iloc[0])
+                change = df_analysis['close'].diff().abs().sum()
+                net_change = abs(df_analysis['close'].iloc[-1] - df_analysis['close'].iloc[0])
                 result_row['efficiency_index'] = round(net_change / change, 4) if change > 0 else 0
                 
-                up_days = (df_analysis['c'] > df_analysis['o']).sum()
-                down_days = (df_analysis['c'] < df_analysis['o']).sum()
+                up_days = (df_analysis['close'] > df_analysis['open']).sum()
+                down_days = (df_analysis['close'] < df_analysis['open']).sum()
                 total_days = len(df_analysis)
                 result_row['trend_harmony_index'] = round(abs(up_days - down_days) / total_days, 4) if total_days > 0 else 0
 
-                wicks = (df_analysis['h'] - df_analysis['l']) - (df_analysis['c'] - df_analysis['o']).abs()
-                body = (df_analysis['c'] - df_analysis['o']).abs()
+                wicks = (df_analysis['high'] - df_analysis['low']) - (df_analysis['close'] - df_analysis['open']).abs()
+                body = (df_analysis['close'] - df_analysis['open']).abs()
                 result_row['avg_wick_ratio'] = round((wicks / body).mean(), 4) if not body.eq(0).all() else 0
 
                 cumulative_returns = (1 + daily_returns).cumprod()
@@ -230,7 +232,7 @@ async def run_analysis_logic():
                 if len(aligned_returns) > 1:
                     result_row['btc_correlation'] = round(aligned_returns.corr(btc_aligned_returns), 4)
 
-                coin_perf = (df_analysis['c'].iloc[-1] / df_analysis['c'].iloc[0])
+                coin_perf = (df_analysis['close'].iloc[-1] / df_analysis['close'].iloc[0])
                 btc_perf = btc_data['perf']
                 result_row['relative_strength_vs_btc'] = round(coin_perf / btc_perf, 4) if btc_perf != 0 else 1
 
@@ -258,8 +260,8 @@ async def run_analysis_logic():
                 try:
                     limit_1d = get_candles_for_period(ANALYSIS_PERIOD_DAYS, '1d', exchange)
                     btc_ohlcv = await fetch_with_retry(exchange.fetch_ohlcv, BTC_SYMBOL, '1d', limit=limit_1d)
-                    df_btc = pd.DataFrame(btc_ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                    btc_data_cache[primary_exchange_id] = {'returns': df_btc['c'].pct_change().dropna(), 'perf': (df_btc['c'].iloc[-1] / df_btc['c'].iloc[0])}
+                    df_btc = pd.DataFrame(btc_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    btc_data_cache[primary_exchange_id] = {'returns': df_btc['close'].pct_change().dropna(), 'perf': (df_btc['close'].iloc[-1] / df_btc['close'].iloc[0])}
                 except Exception as e:
                     logging.error(f"Не удалось загрузить данные по BTC с {primary_exchange_id}: {e}")
                     btc_data_cache[primary_exchange_id] = None
