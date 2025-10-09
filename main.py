@@ -366,19 +366,22 @@ async def run_analysis_logic():
                 
                 conn.commit()
 
-                update_cols = [f'"{col}" = EXCLUDED."{col}"' for col in final_columns if col != 'symbol']
-                upsert_query = f"""
+                logging.info("Очистка таблицы перед записью свежих данных...")
+                cursor.execute("TRUNCATE TABLE monthly_coin_selection RESTART IDENTITY;")
+                
+                # --- ИЗМЕНЕНИЕ: Замена UPSERT на простой INSERT ---
+                insert_query = f"""
                 INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)})
-                VALUES %s
-                ON CONFLICT (symbol) DO UPDATE SET
-                {', '.join(update_cols)};
+                VALUES %s;
                 """
                 
                 data_to_insert = [tuple(row) for row in data_df.reindex(columns=final_columns).where(pd.notna(data_df), None).to_numpy()]
                 if data_to_insert:
-                    execute_values(cursor, upsert_query, data_to_insert)
+                    execute_values(cursor, insert_query, data_to_insert)
                     conn.commit()
-                    logging.info(f"Успешно сохранено/обновлено {len(data_to_insert)} записей.")
+                    logging.info(f"Успешно сохранено {len(data_to_insert)} записей.")
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
             except Exception as e:
                 logging.error(f"Ошибка при работе с базой данных: {e}")
                 if conn:
@@ -400,11 +403,9 @@ async def run_analysis_logic():
         if not enhanced_df.empty:
             initial_count = len(enhanced_df)
             
-            # Сначала убираем монеты с неполными ключевыми данными для фильтрации
             key_filter_columns = ['volatility_index', 'hurst_1d', 'efficiency_index']
             clean_df = enhanced_df.dropna(subset=key_filter_columns).copy()
             
-            # Применяем согласованные фильтры "шлака"
             condition_hurst = ~clean_df['hurst_1d'].between(0.45, 0.55)
             condition_volatility = clean_df['volatility_index'] > 1.0
             condition_efficiency = clean_df['efficiency_index'] > 0.1
@@ -412,9 +413,9 @@ async def run_analysis_logic():
             final_df = clean_df[condition_hurst & condition_volatility & condition_efficiency]
             
             filtered_count = initial_count - len(final_df)
+            saved_count = len(final_df)
             
-            if filtered_count > 0:
-                logging.info(f"Финальная фильтрация завершена: {filtered_count} монет(ы) были отсеяны как 'шлак'.")
+            logging.info(f"Фильтрация завершена. Отсеяно: {filtered_count}. Будет сохранено: {saved_count}.")
             
             save_to_database(final_df)
 
