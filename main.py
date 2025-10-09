@@ -33,19 +33,28 @@ SECRET_TOKEN = os.getenv("SECRET_TOKEN")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# -- Основные параметры анализа --
 EXCHANGES_TO_PROCESS = ['binance', 'bybit'] 
 MIN_DAILY_VOLUME_USDT = 3_000_000
 VOLUME_CATEGORIES = 6
 BLACKLIST_FILE = 'blacklist.json'
 ANALYSIS_PERIOD_DAYS = 90
 MIN_HISTORY_DAYS = 180
-HURST_TIMEFRAMES = ['4h', '8h', '12h', '1d']
+METRICS_TIMEFRAMES = ['4h', '8h', '12h', '1d']
 ATR_PERIOD = 14
 BTC_SYMBOL = 'BTC/USDT'
+
+# -- Технические параметры --
 CONCURRENT_REQUEST_LIMIT = 10
 RETRY_ATTEMPTS = 3
 RETRY_WAIT_MIN = 1
 RETRY_WAIT_MAX = 10
+
+# -- ПАРАМЕТРЫ ФИНАЛЬНОЙ ФИЛЬТРАЦИИ --
+HURST_FILTER_MIN = 0.45
+HURST_FILTER_MAX = 0.55
+ENTROPY_FILTER_MAX_1D = 2.0
+
 
 # --- ЧАСТЬ 3: ВСПОМОГАТЕЛЬНЫЕ И СЛУЖЕБНЫЕ ФУНКЦИИ ---
 
@@ -181,7 +190,7 @@ async def run_analysis_logic():
             symbol = coin_data['symbol']
             
             ohlcv_data = {}
-            primary_exchange_id_for_btc = coin_data['exchanges'][0] # For BTC correlation consistency
+            primary_exchange_id_for_btc = coin_data['exchanges'][0] 
             
             for exchange_id in coin_data['exchanges']:
                 exchange = exchanges_map[exchange_id]
@@ -197,13 +206,13 @@ async def run_analysis_logic():
                         ohlcv_data['1d_data'] = ohlcv_1d
                         
                         tasks = {}
-                        for tf in HURST_TIMEFRAMES:
+                        for tf in METRICS_TIMEFRAMES:
                             limit = int((MIN_HISTORY_DAYS / (exchange.parse_timeframe(tf) / exchange.parse_timeframe('1d'))))
-                            tasks[f'hurst_{tf}_data'] = fetch_with_retry(exchange.fetch_ohlcv, symbol, tf, limit=limit)
+                            tasks[f'ohlcv_{tf}_data'] = fetch_with_retry(exchange.fetch_ohlcv, symbol, tf, limit=limit)
                         
-                        hurst_responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
-                        for i, tf in enumerate(HURST_TIMEFRAMES):
-                            ohlcv_data[f'hurst_{tf}_data'] = hurst_responses[i]
+                        ohlcv_responses = await asyncio.gather(*tasks.values(), return_exceptions=True)
+                        for i, tf in enumerate(METRICS_TIMEFRAMES):
+                            ohlcv_data[f'ohlcv_{tf}_data'] = ohlcv_responses[i]
 
                         break
                     except Exception as e:
@@ -213,7 +222,6 @@ async def run_analysis_logic():
                 logging.error(f"Не удалось получить данные для {symbol} ни с одной из доступных бирж.")
                 return None
 
-            # --- BTC Data Fetching ---
             if primary_exchange_id_for_btc not in btc_data_cache:
                 try:
                     exchange_btc = exchanges_map[primary_exchange_id_for_btc]
@@ -227,7 +235,6 @@ async def run_analysis_logic():
             
             btc_data = btc_data_cache[primary_exchange_id_for_btc]
             
-            # --- Analysis ---
             result_row = {'symbol': symbol}
             df_ohlcv_1d = pd.DataFrame(ohlcv_data['1d_data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df_analysis = df_ohlcv_1d.tail(ANALYSIS_PERIOD_DAYS).copy()
@@ -242,23 +249,18 @@ async def run_analysis_logic():
 
             if not daily_returns.empty:
                 result_row['returns_skewness'] = round(skew(daily_returns), 4)
-                result_row['entropy'] = calculate_entropy(daily_returns)
                 result_row['kurtosis'] = round(daily_returns.kurtosis(), 4)
                 result_row['autocorrelation'] = round(daily_returns.autocorr(), 4)
-
                 change = df_analysis['close'].diff().abs().sum()
                 net_change = abs(df_analysis['close'].iloc[-1] - df_analysis['close'].iloc[0])
                 result_row['efficiency_index'] = round(net_change / change, 4) if change > 0 else 0
-                
                 up_days = (df_analysis['close'] > df_analysis['open']).sum()
                 down_days = (df_analysis['close'] < df_analysis['open']).sum()
                 total_days = len(df_analysis)
                 result_row['trend_harmony_index'] = round(abs(up_days - down_days) / total_days, 4) if total_days > 0 else 0
-
                 wicks = (df_analysis['high'] - df_analysis['low']) - (df_analysis['close'] - df_analysis['open']).abs()
                 body = (df_analysis['close'] - df_analysis['open']).abs()
                 result_row['avg_wick_ratio'] = round((wicks / body).mean(), 4) if not body.eq(0).all() else 0
-
                 cumulative_returns = (1 + daily_returns).cumprod()
                 peak = cumulative_returns.expanding(min_periods=1).max()
                 drawdown = (cumulative_returns - peak) / peak
@@ -268,26 +270,35 @@ async def run_analysis_logic():
                 aligned_returns, btc_aligned_returns = daily_returns.align(btc_data['returns'], join='inner')
                 if len(aligned_returns) > 1:
                     result_row['btc_correlation'] = round(aligned_returns.corr(btc_aligned_returns), 4)
-
                 coin_perf = (df_analysis['close'].iloc[-1] / df_analysis['close'].iloc[0]) if df_analysis['close'].iloc[0] != 0 else 1
                 btc_perf = btc_data['perf']
                 result_row['relative_strength_vs_btc'] = round(coin_perf / btc_perf, 4) if btc_perf != 0 else 1
             
-            for tf in HURST_TIMEFRAMES:
-                hurst_data = ohlcv_data.get(f'hurst_{tf}_data')
-                if isinstance(hurst_data, Exception):
-                    logging.warning(f"Не удалось загрузить данные для Хёрста ({tf}) для {symbol}: {hurst_data}")
+            for tf in METRICS_TIMEFRAMES:
+                tf_ohlcv = ohlcv_data.get(f'ohlcv_{tf}_data')
+                if isinstance(tf_ohlcv, Exception) or not tf_ohlcv:
                     continue
                 
-                if hurst_data and len(hurst_data) > 100:
-                    close_prices = np.array([candle[4] for candle in hurst_data])
+                if len(tf_ohlcv) > 100:
+                    close_prices = np.array([candle[4] for candle in tf_ohlcv])
                     try:
-                        if np.std(close_prices) > 1e-9: # Check for non-zero volatility
+                        if np.std(close_prices) > 1e-9:
                             H, _, _ = compute_Hc(close_prices, kind='price', simplified=True)
                             result_row[f'hurst_{tf}'] = round(H, 4)
                     except Exception as e:
                         logging.warning(f"Не удалось рассчитать Хёрста для {symbol} на {tf}: {e}")
 
+                df_tf = pd.DataFrame(tf_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                if tf == '1d':
+                    df_tf_analysis = df_tf.tail(ANALYSIS_PERIOD_DAYS).copy()
+                else:
+                    candles_per_day = 24 / int(tf.replace('h',''))
+                    limit = int(ANALYSIS_PERIOD_DAYS * candles_per_day)
+                    df_tf_analysis = df_tf.tail(limit).copy()
+                
+                tf_returns = df_tf_analysis['close'].pct_change().dropna()
+                if not tf_returns.empty:
+                    result_row[f'entropy_{tf}'] = calculate_entropy(tf_returns)
             return result_row
 
         async def analyze_and_enhance_data(df, exchanges_map):
@@ -295,9 +306,7 @@ async def run_analysis_logic():
             logging.info(f"Начало асинхронного анализа для {len(df)} монет...")
             btc_data_cache = {}
             semaphore = asyncio.Semaphore(CONCURRENT_REQUEST_LIMIT)
-            
             analysis_tasks = [analyze_single_coin(row, exchanges_map, btc_data_cache, semaphore) for _, row in df.iterrows()]
-
             analysis_results = []
             for f in tqdm.as_completed(analysis_tasks, desc="Анализ монет"):
                 try:
@@ -306,11 +315,9 @@ async def run_analysis_logic():
                         analysis_results.append(result)
                 except Exception as e:
                     logging.error(f"Критическая ошибка в задаче анализа для монеты: {e}", exc_info=True)
-
             if not analysis_results:
                 logging.warning("Не удалось проанализировать ни одной монеты.")
                 return pd.DataFrame()
-
             df_results = pd.DataFrame(analysis_results).set_index('symbol')
             df = df.set_index('symbol').join(df_results).reset_index()
             return df
@@ -320,72 +327,56 @@ async def run_analysis_logic():
             if not db_url:
                 logging.error("DATABASE_URL не установлена.")
                 return
-            
             if data_df.empty:
                 logging.info("Нет данных для сохранения в базу.")
                 return
-
             logging.info("Сохранение данных в PostgreSQL...")
             conn = None
             final_columns = [
                 'symbol', 'exchanges', 'category', 'logoUrl', 'volatility_index',
                 'hurst_4h', 'hurst_8h', 'hurst_12h', 'hurst_1d',
+                'entropy_4h', 'entropy_8h', 'entropy_12h', 'entropy_1d',
                 'efficiency_index', 'trend_harmony_index', 'btc_correlation',
                 'returns_skewness', 'avg_wick_ratio', 'relative_strength_vs_btc', 
-                'max_drawdown_percent', 'entropy', 'kurtosis', 'autocorrelation'
+                'max_drawdown_percent', 'kurtosis', 'autocorrelation'
             ]
-            
             column_types = {
                 'exchanges': 'TEXT[]', 'category': 'INTEGER', 'logoUrl': 'VARCHAR(255)',
-                'volatility_index': 'REAL', 'hurst_4h': 'REAL', 'hurst_8h': 'REAL',
-                'hurst_12h': 'REAL', 'hurst_1d': 'REAL', 'efficiency_index': 'REAL',
-                'trend_harmony_index': 'REAL', 'btc_correlation': 'REAL', 'returns_skewness': 'REAL',
-                'avg_wick_ratio': 'REAL', 'relative_strength_vs_btc': 'REAL', 'max_drawdown_percent': 'REAL',
-                'entropy': 'REAL', 'kurtosis': 'REAL', 'autocorrelation': 'REAL'
+                'volatility_index': 'REAL',
+                'hurst_4h': 'REAL', 'hurst_8h': 'REAL', 'hurst_12h': 'REAL', 'hurst_1d': 'REAL',
+                'entropy_4h': 'REAL', 'entropy_8h': 'REAL', 'entropy_12h': 'REAL', 'entropy_1d': 'REAL',
+                'efficiency_index': 'REAL', 'trend_harmony_index': 'REAL',
+                'btc_correlation': 'REAL', 'returns_skewness': 'REAL',
+                'avg_wick_ratio': 'REAL', 'relative_strength_vs_btc': 'REAL',
+                'max_drawdown_percent': 'REAL', 'kurtosis': 'REAL', 'autocorrelation': 'REAL'
             }
-
             for col in final_columns:
                 if col not in data_df.columns:
                     data_df[col] = None
-            
             try:
                 conn = psycopg2.connect(db_url)
                 cursor = conn.cursor()
-                
                 create_table_query = """
                 CREATE TABLE IF NOT EXISTS monthly_coin_selection (
-                    id SERIAL PRIMARY KEY,
-                    "symbol" VARCHAR(255) UNIQUE,
+                    id SERIAL PRIMARY KEY, "symbol" VARCHAR(255) UNIQUE,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                );
-                """
+                );"""
                 cursor.execute(create_table_query)
-
                 for col, col_type in column_types.items():
                     cursor.execute(f'ALTER TABLE monthly_coin_selection ADD COLUMN IF NOT EXISTS "{col}" {col_type};')
-                
                 conn.commit()
-
                 logging.info("Очистка таблицы перед записью свежих данных...")
                 cursor.execute("TRUNCATE TABLE monthly_coin_selection RESTART IDENTITY;")
-                
-                # --- ИЗМЕНЕНИЕ: Замена UPSERT на простой INSERT ---
                 insert_query = f"""
-                INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)})
-                VALUES %s;
-                """
-                
+                INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)}) VALUES %s;"""
                 data_to_insert = [tuple(row) for row in data_df.reindex(columns=final_columns).where(pd.notna(data_df), None).to_numpy()]
                 if data_to_insert:
                     execute_values(cursor, insert_query, data_to_insert)
                     conn.commit()
                     logging.info(f"Успешно сохранено {len(data_to_insert)} записей.")
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
             except Exception as e:
                 logging.error(f"Ошибка при работе с базой данных: {e}")
-                if conn:
-                    conn.rollback()
+                if conn: conn.rollback()
             finally:
                 if conn: conn.close()
         
@@ -402,21 +393,14 @@ async def run_analysis_logic():
         
         if not enhanced_df.empty:
             initial_count = len(enhanced_df)
-            
-            key_filter_columns = ['volatility_index', 'hurst_1d', 'efficiency_index']
+            key_filter_columns = ['hurst_1d', 'entropy_1d']
             clean_df = enhanced_df.dropna(subset=key_filter_columns).copy()
-            
-            condition_hurst = ~clean_df['hurst_1d'].between(0.45, 0.55)
-            condition_volatility = clean_df['volatility_index'] > 1.0
-            condition_efficiency = clean_df['efficiency_index'] > 0.1
-            
-            final_df = clean_df[condition_hurst & condition_volatility & condition_efficiency]
-            
+            condition_hurst = ~clean_df['hurst_1d'].between(HURST_FILTER_MIN, HURST_FILTER_MAX)
+            condition_entropy = clean_df['entropy_1d'] < ENTROPY_FILTER_MAX_1D
+            final_df = clean_df[condition_hurst & condition_entropy]
             filtered_count = initial_count - len(final_df)
             saved_count = len(final_df)
-            
             logging.info(f"Фильтрация завершена. Отсеяно: {filtered_count}. Будет сохранено: {saved_count}.")
-            
             save_to_database(final_df)
 
     finally:
@@ -425,7 +409,6 @@ async def run_analysis_logic():
         await asyncio.gather(*close_tasks)
         logging.info("Скрипт успешно завершил работу.")
 
-
 # --- ЧАСТЬ 5: ЭНДПОИНТЫ СЕРВЕРА ---
 
 @app.post("/trigger")
@@ -433,12 +416,9 @@ async def trigger_run(request: Request, background_tasks: BackgroundTasks):
     auth_header = request.headers.get('Authorization')
     if not SECRET_TOKEN:
         raise HTTPException(status_code=500, detail={"error": "SECRET_TOKEN не настроен на сервере."})
-    
     if not auth_header or auth_header != f"Bearer {SECRET_TOKEN}":
         raise HTTPException(status_code=401, detail={"error": "Неверный токен авторизации."})
-
     background_tasks.add_task(run_analysis_logic)
-    
     return {"message": "Запрос на анализ принят. Процесс запущен в фоновом режиме."}
 
 @app.get("/health")
