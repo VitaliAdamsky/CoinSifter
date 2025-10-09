@@ -62,7 +62,7 @@ def load_blacklist():
         logging.error(f"Ошибка чтения файла {BLACKLIST_FILE}. Используется пустой черный список.")
         return []
 
-RETRYABLE_EXCEPTIONS = (RateLimitExceeded, NetworkError, ExchangeError)
+RETRYABLE_EXCEPTIONS = (RateLimitExceeded, NetworkError, ExchangeError, ExchangeNotAvailable)
 
 @retry(
     stop=stop_after_attempt(RETRY_ATTEMPTS),
@@ -145,17 +145,6 @@ async def run_analysis_logic():
     fetch_tasks = [fetch_and_filter_markets(ex, MIN_DAILY_VOLUME_USDT, blacklist) for ex in exchanges_map.values()]
     all_exchanges_coins_list = await asyncio.gather(*fetch_tasks)
     all_exchanges_coins = {ex.id: coins for ex, coins in zip(exchanges_map.values(), all_exchanges_coins_list)}
-
-    # ... (весь остальной код анализа, агрегации, сохранения в БД без изменений)
-    # Этот блок кода остается точно таким же, как в предыдущих версиях.
-    # Я его здесь не дублирую для краткости, но он должен быть здесь.
-    # Включая:
-    # - aggregate_exchanges_data
-    # - categorize_by_volume
-    # - get_candles_for_period
-    # - analyze_single_coin
-    # - analyze_and_enhance_data
-    # - save_to_database
     
     def aggregate_exchanges_data(all_exchanges_coins, exchanges_map):
         logging.info("Агрегация данных со всех бирж...")
@@ -187,7 +176,6 @@ async def run_analysis_logic():
         return int(days_in_ms / tf_in_ms)
         
     async def analyze_single_coin(coin_data, exchange, btc_data, semaphore):
-        # ... (полный код функции analyze_single_coin)
         symbol = coin_data['symbol']
         result_row = {'symbol': symbol}
         
@@ -207,17 +195,44 @@ async def run_analysis_logic():
             df_analysis = df_ohlcv_1d.tail(ANALYSIS_PERIOD_DAYS).copy()
             daily_returns = df_analysis['c'].pct_change().dropna()
             
-            # ... (все расчеты метрик)
             last_close = df_ohlcv_1d['c'].iloc[-1]
             if last_close > 0:
                 df_ohlcv_1d.ta.atr(length=ATR_PERIOD, append=True)
-                last_atr = df_ohlcv_1d[f'ATRr_{ATR_PERIOD}'].iloc[-1]
+                last_atr = df_ohlcv_1d[f'ATR_{ATR_PERIOD}'].iloc[-1]
                 result_row['volatility_index'] = round((last_atr / last_close) * 100, 4) if pd.notna(last_atr) else None
 
             if not daily_returns.empty:
                 result_row['returns_skewness'] = round(skew(daily_returns), 4)
                 result_row['entropy'] = calculate_entropy(daily_returns)
-            # ... (и так далее для всех метрик)
+                result_row['kurtosis'] = round(daily_returns.kurtosis(), 4)
+                result_row['autocorrelation'] = round(daily_returns.autocorr(), 4)
+
+                change = df_analysis['c'].diff().abs().sum()
+                net_change = abs(df_analysis['c'].iloc[-1] - df_analysis['c'].iloc[0])
+                result_row['efficiency_index'] = round(net_change / change, 4) if change > 0 else 0
+                
+                up_days = (df_analysis['c'] > df_analysis['o']).sum()
+                down_days = (df_analysis['c'] < df_analysis['o']).sum()
+                total_days = len(df_analysis)
+                result_row['trend_harmony_index'] = round(abs(up_days - down_days) / total_days, 4) if total_days > 0 else 0
+
+                wicks = (df_analysis['h'] - df_analysis['l']) - (df_analysis['c'] - df_analysis['o']).abs()
+                body = (df_analysis['c'] - df_analysis['o']).abs()
+                result_row['avg_wick_ratio'] = round((wicks / body).mean(), 4) if not body.eq(0).all() else 0
+
+                cumulative_returns = (1 + daily_returns).cumprod()
+                peak = cumulative_returns.expanding(min_periods=1).max()
+                drawdown = (cumulative_returns - peak) / peak
+                result_row['max_drawdown_percent'] = round(drawdown.min() * 100, 2)
+
+            if btc_data and not btc_data['returns'].empty:
+                aligned_returns, btc_aligned_returns = daily_returns.align(btc_data['returns'], join='inner')
+                if len(aligned_returns) > 1:
+                    result_row['btc_correlation'] = round(aligned_returns.corr(btc_aligned_returns), 4)
+
+                coin_perf = (df_analysis['c'].iloc[-1] / df_analysis['c'].iloc[0])
+                btc_perf = btc_data['perf']
+                result_row['relative_strength_vs_btc'] = round(coin_perf / btc_perf, 4) if btc_perf != 0 else 1
 
         for i, tf in enumerate(HURST_TIMEFRAMES):
             ohlcv_hurst = responses[i+1]
@@ -266,7 +281,6 @@ async def run_analysis_logic():
 
         logging.info("Сохранение данных в PostgreSQL...")
         conn = None
-        # ... (полный код функции save_to_database)
         final_columns = [
             'symbol', 'exchanges', 'category', 'logoUrl', 'volatility_index',
             'hurst_4h', 'hurst_8h', 'hurst_12h', 'hurst_1d',
@@ -274,21 +288,58 @@ async def run_analysis_logic():
             'returns_skewness', 'avg_wick_ratio', 'relative_strength_vs_btc', 
             'max_drawdown_percent', 'entropy', 'kurtosis', 'autocorrelation'
         ]
+        
+        for col in final_columns:
+            if col not in data_df.columns:
+                data_df[col] = None
+
         data_df_to_save = data_df.reindex(columns=final_columns)
+        
         try:
             conn = psycopg2.connect(db_url)
             cursor = conn.cursor()
-            # ... (код создания таблицы и вставки данных)
+            
+            create_table_query = """
+            CREATE TABLE IF NOT EXISTS monthly_coin_selection (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(255) UNIQUE,
+                exchanges TEXT[],
+                category INTEGER,
+                logoUrl VARCHAR(255),
+                volatility_index REAL,
+                hurst_4h REAL,
+                hurst_8h REAL,
+                hurst_12h REAL,
+                hurst_1d REAL,
+                efficiency_index REAL,
+                trend_harmony_index REAL,
+                btc_correlation REAL,
+                returns_skewness REAL,
+                avg_wick_ratio REAL,
+                relative_strength_vs_btc REAL,
+                max_drawdown_percent REAL,
+                entropy REAL,
+                kurtosis REAL,
+                autocorrelation REAL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+            cursor.execute(create_table_query)
+            
             cursor.execute("TRUNCATE TABLE monthly_coin_selection RESTART IDENTITY;")
             data_to_insert = [tuple(row) for row in data_df_to_save.where(pd.notna(data_df_to_save), None).to_numpy()]
             cols = ', '.join(f'"{c}"' for c in final_columns)
             execute_values(cursor, f"INSERT INTO monthly_coin_selection ({cols}) VALUES %s", data_to_insert)
+            
             conn.commit()
             logging.info(f"Успешно сохранено {len(data_to_insert)} записей.")
         except Exception as e:
             logging.error(f"Ошибка при работе с базой данных: {e}")
+            if conn:
+                conn.rollback()
         finally:
-            if conn: conn.close()
+            if conn:
+                conn.close()
 
     aggregated_list = aggregate_exchanges_data(all_exchanges_coins, exchanges_map)
     if not aggregated_list:
@@ -337,5 +388,5 @@ async def health_check():
 # --- Точка входа для Uvicorn (для локального теста) ---
 if __name__ == "__main__":
     # Эта часть не используется при запуске на Render
-    logging.info("Для локального запуска сервера используйте команду: uvicorn main:app ---reload")
+    logging.info("Для локального запуска сервера используйте команду: uvicorn main:app --reload")
 
