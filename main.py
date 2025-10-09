@@ -335,6 +335,15 @@ async def run_analysis_logic():
                 'max_drawdown_percent', 'entropy', 'kurtosis', 'autocorrelation'
             ]
             
+            column_types = {
+                'exchanges': 'TEXT[]', 'category': 'INTEGER', 'logoUrl': 'VARCHAR(255)',
+                'volatility_index': 'REAL', 'hurst_4h': 'REAL', 'hurst_8h': 'REAL',
+                'hurst_12h': 'REAL', 'hurst_1d': 'REAL', 'efficiency_index': 'REAL',
+                'trend_harmony_index': 'REAL', 'btc_correlation': 'REAL', 'returns_skewness': 'REAL',
+                'avg_wick_ratio': 'REAL', 'relative_strength_vs_btc': 'REAL', 'max_drawdown_percent': 'REAL',
+                'entropy': 'REAL', 'kurtosis': 'REAL', 'autocorrelation': 'REAL'
+            }
+
             for col in final_columns:
                 if col not in data_df.columns:
                     data_df[col] = None
@@ -343,36 +352,26 @@ async def run_analysis_logic():
                 conn = psycopg2.connect(db_url)
                 cursor = conn.cursor()
                 
-                # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-                # Возвращаем команду создания таблицы
+                # --- ИЗМЕНЕНИЕ: Создание таблицы и колонок отдельно ---
+                # Создаём таблицу, если её нет
                 create_table_query = """
                 CREATE TABLE IF NOT EXISTS monthly_coin_selection (
                     id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(255) UNIQUE,
-                    exchanges TEXT[],
-                    category INTEGER,
-                    logoUrl VARCHAR(255),
-                    volatility_index REAL,
-                    hurst_4h REAL,
-                    hurst_8h REAL,
-                    hurst_12h REAL,
-                    hurst_1d REAL,
-                    efficiency_index REAL,
-                    trend_harmony_index REAL,
-                    btc_correlation REAL,
-                    returns_skewness REAL,
-                    avg_wick_ratio REAL,
-                    relative_strength_vs_btc REAL,
-                    max_drawdown_percent REAL,
-                    entropy REAL,
-                    kurtosis REAL,
-                    autocorrelation REAL,
+                    "symbol" VARCHAR(255) UNIQUE,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
                 """
                 cursor.execute(create_table_query)
+
+                # Добавляем колонки, если их нет
+                for col, col_type in column_types.items():
+                    cursor.execute(f'ALTER TABLE monthly_coin_selection ADD COLUMN IF NOT EXISTS "{col}" {col_type};')
+                
+                # Фиксируем изменения схемы
+                conn.commit()
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
+                # Теперь вставляем данные в отдельной транзакции
                 update_cols = [f'"{col}" = EXCLUDED."{col}"' for col in final_columns if col != 'symbol']
                 upsert_query = f"""
                 INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)})
@@ -384,15 +383,12 @@ async def run_analysis_logic():
                 data_to_insert = [tuple(row) for row in data_df.reindex(columns=final_columns).where(pd.notna(data_df), None).to_numpy()]
                 if data_to_insert:
                     execute_values(cursor, upsert_query, data_to_insert)
-                    conn.commit()
+                    conn.commit()  # <-- Вот тут фиксируем данные
                     logging.info(f"Успешно сохранено/обновлено {len(data_to_insert)} записей.")
             except Exception as e:
                 logging.error(f"Ошибка при работе с базой данных: {e}")
                 if conn:
-                    # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-                    # Добавляем откат транзакции
-                    conn.rollback()
-                    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                    conn.rollback()  # <-- Откатываем данные, если ошибка
             finally:
                 if conn: conn.close()
         
