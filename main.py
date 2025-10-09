@@ -16,6 +16,7 @@ from ccxt.base.errors import RateLimitExceeded, NetworkError, ExchangeError, Exc
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from contextlib import asynccontextmanager
+from pymongo import MongoClient
 
 # --- ЧАСТЬ 1: Настройка веб-сервера FastAPI ---
 
@@ -37,7 +38,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 EXCHANGES_TO_PROCESS = ['binance', 'bybit'] 
 MIN_DAILY_VOLUME_USDT = 3_000_000
 VOLUME_CATEGORIES = 6
-BLACKLIST_FILE = 'blacklist.json'
 ANALYSIS_PERIOD_DAYS = 90
 MIN_HISTORY_DAYS = 180
 METRICS_TIMEFRAMES = ['4h', '8h', '12h', '1d']
@@ -53,23 +53,38 @@ RETRY_WAIT_MAX = 10
 # -- ПАРАМЕТРЫ ФИНАЛЬНОЙ ФИЛЬТРАЦИИ --
 HURST_FILTER_MIN = 0.45
 HURST_FILTER_MAX = 0.55
-ENTROPY_FILTER_MAX_1D = 2.8
+ENTROPY_FILTER_MAX_1D = 3.0
 
 
 # --- ЧАСТЬ 3: ВСПОМОГАТЕЛЬНЫЕ И СЛУЖЕБНЫЕ ФУНКЦИИ ---
 
-def load_blacklist():
-    """Загружает черный список монет из файла blacklist.json."""
+def load_blacklist_from_mongo():
+    """Загружает черный список монет из MongoDB."""
+    mongo_url = os.getenv('MONGO_DB_URL')
+    db_name = "general"
+    collection_name = "blacklist"
+
+    if not mongo_url:
+        logging.warning("Переменная окружения MONGO_DB_URL не найдена, используется пустой черный список.")
+        return []
+
     try:
-        with open(BLACKLIST_FILE, 'r') as f:
-            logging.info("Черный список blacklist.json успешно загружен.")
-            return json.load(f)
-    except FileNotFoundError:
-        logging.warning(f"Файл {BLACKLIST_FILE} не найден, используется пустой черный список.")
+        logging.info(f"Подключение к MongoDB для загрузки черного списка из '{db_name}.{collection_name}'...")
+        client = MongoClient(mongo_url)
+        db = client[db_name]
+        collection = db[collection_name]
+        
+        blacklist_cursor = collection.find({}, {'symbol': 1, '_id': 0})
+        blacklist = [item['symbol'] for item in blacklist_cursor]
+        
+        client.close()
+        
+        logging.info(f"Черный список из MongoDB успешно загружен. Найдено {len(blacklist)} монет.")
+        return blacklist
+    except Exception as e:
+        logging.error(f"Ошибка при загрузке черного списка из MongoDB: {e}. Используется пустой черный список.")
         return []
-    except json.JSONDecodeError:
-        logging.error(f"Ошибка чтения файла {BLACKLIST_FILE}. Файл может быть поврежден. Используется пустой черный список.")
-        return []
+
 
 RETRYABLE_EXCEPTIONS = (RateLimitExceeded, NetworkError, ExchangeError, ExchangeNotAvailable)
 
@@ -100,13 +115,14 @@ async def initialize_exchange(exchange_name):
     """Инициализирует биржу и проверяет наличие BTC_SYMBOL."""
     logging.info(f"Инициализация биржи {exchange_name}...")
     try:
-        exchange_map = {'binance': ccxt.binance, 'bybit': ccxt.bybit}
+        exchange_map = {'binance': ccxt.binance, 'bybit': ccxt.bybit, 'okx': ccxt.okx}
         exchange_class = exchange_map.get(exchange_name)
         if not exchange_class:
             logging.error(f"Биржа '{exchange_name}' не поддерживается.")
             return None
         
         exchange = exchange_class({'options': {'defaultType': 'swap'}, 'timeout': 30000})
+        exchange.enableRateLimit = True # Включаем встроенный замедлитель запросов
         await exchange.load_markets()
 
         if BTC_SYMBOL not in exchange.markets:
@@ -125,7 +141,7 @@ async def run_analysis_logic():
     """Содержит всю основную логику анализа."""
     logging.info("Запуск анализа по триггеру...")
     
-    blacklist = load_blacklist()
+    blacklist = load_blacklist_from_mongo()
     init_tasks = [initialize_exchange(name) for name in EXCHANGES_TO_PROCESS]
     initialized_exchanges = await asyncio.gather(*init_tasks)
     exchanges_map = {ex.id: ex for ex in initialized_exchanges if ex}
