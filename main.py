@@ -53,7 +53,7 @@ RETRY_WAIT_MAX = 10
 # -- ПАРАМЕТРЫ ФИНАЛЬНОЙ ФИЛЬТРАЦИИ --
 HURST_FILTER_MIN = 0.45
 HURST_FILTER_MAX = 0.55
-ENTROPY_FILTER_MAX_1D = 2.8
+ENTROPY_FILTER_MAX_1D = 3
 
 
 # --- ЧАСТЬ 3: ВСПОМОГАТЕЛЬНЫЕ И СЛУЖЕБНЫЕ ФУНКЦИИ ---
