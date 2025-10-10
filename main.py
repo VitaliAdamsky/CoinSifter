@@ -4,7 +4,8 @@ import pandas as pd
 import pandas_ta_classic as ta
 import json
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2 import sql
+from psycopg2.extras import execute_values, RealDictCursor
 import asyncio
 from tqdm.asyncio import tqdm
 from hurst import compute_Hc
@@ -15,15 +16,18 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from ccxt.base.errors import RateLimitExceeded, NetworkError, ExchangeError, ExchangeNotAvailable
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from pymongo import MongoClient
+import datetime
 
 # --- ЧАСТЬ 1: Настройка веб-сервера FastAPI ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управляет жизненным циклом сервера: выполняется при старте и остановке."""
-    logging.info("Сервер запущен и готов к работе.")
+    setup_database_tables()
+    logging.info("Сервер запущен и готов к работе. Таблицы в БД проверены.")
     yield
     logging.info("Сервер останавливается.")
 
@@ -58,6 +62,113 @@ ENTROPY_FILTER_MAX_1D = 3
 
 # --- ЧАСТЬ 3: ВСПОМОГАТЕЛЬНЫЕ И СЛУЖЕБНЫЕ ФУНКЦИИ ---
 
+# --- Блок работы с БД и Логированием ---
+
+def get_db_connection():
+    """Устанавливает соединение с базой данных PostgreSQL."""
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        logging.error("DATABASE_URL не установлена.")
+        raise ValueError("DATABASE_URL must be set")
+    return psycopg2.connect(db_url)
+
+def setup_database_tables():
+    """Проверяет и создает все необходимые таблицы в БД при старте сервера."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Создание таблицы для логов
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS script_run_logs (
+            id SERIAL PRIMARY KEY,
+            start_time TIMESTAMP WITH TIME ZONE,
+            end_time TIMESTAMP WITH TIME ZONE,
+            status VARCHAR(50),
+            coins_saved INTEGER,
+            details TEXT
+        );
+        """)
+        
+        # Создание таблицы для результатов анализа
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS monthly_coin_selection (
+            id SERIAL PRIMARY KEY, 
+            "symbol" VARCHAR(255) UNIQUE, 
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );""")
+
+        # Безопасное добавление колонок в таблицу результатов
+        final_columns = { 'symbol': 'VARCHAR(255)', 'exchanges': 'TEXT[]', 'category': 'INTEGER', 'logoUrl': 'VARCHAR(255)', 'volatility_index': 'REAL', 'hurst_4h': 'REAL', 'hurst_8h': 'REAL', 'hurst_12h': 'REAL', 'hurst_1d': 'REAL', 'entropy_4h': 'REAL', 'entropy_8h': 'REAL', 'entropy_12h': 'REAL', 'entropy_1d': 'REAL', 'efficiency_index': 'REAL', 'trend_harmony_index': 'REAL', 'btc_correlation': 'REAL', 'returns_skewness': 'REAL', 'avg_wick_ratio': 'REAL', 'relative_strength_vs_btc': 'REAL', 'max_drawdown_percent': 'REAL', 'kurtosis': 'REAL', 'autocorrelation': 'REAL' }
+        for col, col_type in final_columns.items():
+            # Используем psycopg2.sql для безопасной параметризации
+            alter_query = sql.SQL("ALTER TABLE monthly_coin_selection ADD COLUMN IF NOT EXISTS {} {}").format(
+                sql.Identifier(col), sql.SQL(col_type)
+            )
+            cursor.execute(alter_query)
+            
+        conn.commit()
+        cursor.close()
+        logging.info("Все таблицы ('script_run_logs', 'monthly_coin_selection') успешно проверены/созданы.")
+    except Exception as e:
+        logging.error(f"Ошибка при настройке таблиц в БД: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+def log_run_start():
+    """Записывает в лог информацию о начале запуска скрипта."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        start_time = datetime.datetime.now(datetime.timezone.utc)
+        cursor.execute(
+            "INSERT INTO script_run_logs (start_time, status) VALUES (%s, %s) RETURNING id",
+            (start_time, 'В процессе')
+        )
+        log_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        logging.info(f"Запуск скрипта залогирован с ID: {log_id}")
+        return log_id
+    except Exception as e:
+        logging.error(f"Ошибка при логировании начала запуска: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+def log_run_end(log_id, status, coins_saved=0, details=""):
+    """Обновляет запись в логе по окончанию работы скрипта."""
+    if not log_id: 
+        logging.error("Не удалось обновить лог запуска: отсутствует ID.")
+        return
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        end_time = datetime.datetime.now(datetime.timezone.utc)
+        cursor.execute(
+            """
+            UPDATE script_run_logs 
+            SET end_time = %s, status = %s, coins_saved = %s, details = %s 
+            WHERE id = %s
+            """,
+            (end_time, status, coins_saved, details, log_id)
+        )
+        conn.commit()
+        cursor.close()
+        logging.info(f"Лог запуска {log_id} обновлен со статусом: {status}")
+    except Exception as e:
+        logging.error(f"Ошибка при логировании окончания запуска: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+# --- Остальные вспомогательные функции ---
+
 def load_blacklist_from_mongo():
     """Загружает черный список монет из MongoDB."""
     mongo_url = os.getenv('MONGO_DB_URL')
@@ -70,7 +181,7 @@ def load_blacklist_from_mongo():
 
     try:
         logging.info(f"Подключение к MongoDB для загрузки черного списка из '{db_name}.{collection_name}'...")
-        client = MongoClient(mongo_url)
+        client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
         db = client[db_name]
         collection = db[collection_name]
         
@@ -108,7 +219,8 @@ def calculate_entropy(series, bins=10):
         probabilities = hist / len(cleaned_series)
         probabilities = probabilities[probabilities > 0]
         return -np.sum(probabilities * np.log2(probabilities))
-    except Exception:
+    except Exception as e:
+        logging.warning(f"Ошибка при расчете энтропии: {e}")
         return None
 
 async def initialize_exchange(exchange_name):
@@ -139,17 +251,18 @@ async def initialize_exchange(exchange_name):
 
 async def run_analysis_logic():
     """Содержит всю основную логику анализа."""
-    logging.info("Запуск анализа по триггеру...")
+    log_id = log_run_start()
     
-    blacklist = load_blacklist_from_mongo()
-    init_tasks = [initialize_exchange(name) for name in EXCHANGES_TO_PROCESS]
-    initialized_exchanges = await asyncio.gather(*init_tasks)
-    exchanges_map = {ex.id: ex for ex in initialized_exchanges if ex}
-
     try:
+        logging.info("Запуск анализа по триггеру...")
+        
+        blacklist = load_blacklist_from_mongo()
+        init_tasks = [initialize_exchange(name) for name in EXCHANGES_TO_PROCESS]
+        initialized_exchanges = await asyncio.gather(*init_tasks)
+        exchanges_map = {ex.id: ex for ex in initialized_exchanges if ex}
+
         if not exchanges_map:
-            logging.critical("Не удалось инициализировать ни одной биржи. Выход.")
-            return
+            raise Exception("Не удалось инициализировать ни одной биржи. Выход.")
 
         async def fetch_markets(exchange):
             logging.info(f"Загрузка рынков с биржи {exchange.id}...")
@@ -282,7 +395,7 @@ async def run_analysis_logic():
                 drawdown = (cumulative_returns - peak) / peak
                 result_row['max_drawdown_percent'] = round(drawdown.min() * 100, 2)
 
-            if btc_data and not btc_data['returns'].empty:
+            if btc_data is not None and not btc_data['returns'].empty:
                 aligned_returns, btc_aligned_returns = daily_returns.align(btc_data['returns'], join='inner')
                 if len(aligned_returns) > 1:
                     result_row['btc_correlation'] = round(aligned_returns.corr(btc_aligned_returns), 4)
@@ -342,63 +455,52 @@ async def run_analysis_logic():
             db_url = os.getenv('DATABASE_URL')
             if not db_url:
                 logging.error("DATABASE_URL не установлена.")
-                return
+                return 0
             if data_df.empty:
                 logging.info("Нет данных для сохранения в базу.")
-                return
+                return 0
+            
             logging.info("Сохранение данных в PostgreSQL...")
             conn = None
-            final_columns = [
-                'symbol', 'exchanges', 'category', 'logoUrl', 'volatility_index',
-                'hurst_4h', 'hurst_8h', 'hurst_12h', 'hurst_1d',
-                'entropy_4h', 'entropy_8h', 'entropy_12h', 'entropy_1d',
-                'efficiency_index', 'trend_harmony_index', 'btc_correlation',
-                'returns_skewness', 'avg_wick_ratio', 'relative_strength_vs_btc', 
-                'max_drawdown_percent', 'kurtosis', 'autocorrelation'
-            ]
-            column_types = {
-                'exchanges': 'TEXT[]', 'category': 'INTEGER', 'logoUrl': 'VARCHAR(255)',
-                'volatility_index': 'REAL',
-                'hurst_4h': 'REAL', 'hurst_8h': 'REAL', 'hurst_12h': 'REAL', 'hurst_1d': 'REAL',
-                'entropy_4h': 'REAL', 'entropy_8h': 'REAL', 'entropy_12h': 'REAL', 'entropy_1d': 'REAL',
-                'efficiency_index': 'REAL', 'trend_harmony_index': 'REAL',
-                'btc_correlation': 'REAL', 'returns_skewness': 'REAL',
-                'avg_wick_ratio': 'REAL', 'relative_strength_vs_btc': 'REAL',
-                'max_drawdown_percent': 'REAL', 'kurtosis': 'REAL', 'autocorrelation': 'REAL'
-            }
-            for col in final_columns:
-                if col not in data_df.columns:
-                    data_df[col] = None
+            saved_count = 0
             try:
-                conn = psycopg2.connect(db_url)
+                conn = get_db_connection()
                 cursor = conn.cursor()
-                create_table_query = """
-                CREATE TABLE IF NOT EXISTS monthly_coin_selection (
-                    id SERIAL PRIMARY KEY, "symbol" VARCHAR(255) UNIQUE,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                );"""
-                cursor.execute(create_table_query)
-                for col, col_type in column_types.items():
-                    cursor.execute(f'ALTER TABLE monthly_coin_selection ADD COLUMN IF NOT EXISTS "{col}" {col_type};')
-                conn.commit()
+                
                 logging.info("Очистка таблицы перед записью свежих данных...")
                 cursor.execute("TRUNCATE TABLE monthly_coin_selection RESTART IDENTITY;")
-                insert_query = f"""
-                INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)}) VALUES %s;"""
+                
+                final_columns = [
+                    'symbol', 'exchanges', 'category', 'logoUrl', 'volatility_index',
+                    'hurst_4h', 'hurst_8h', 'hurst_12h', 'hurst_1d',
+                    'entropy_4h', 'entropy_8h', 'entropy_12h', 'entropy_1d',
+                    'efficiency_index', 'trend_harmony_index', 'btc_correlation',
+                    'returns_skewness', 'avg_wick_ratio', 'relative_strength_vs_btc', 
+                    'max_drawdown_percent', 'kurtosis', 'autocorrelation'
+                ]
+                for col in final_columns:
+                    if col not in data_df.columns: data_df[col] = None
+                
+                insert_query = f"""INSERT INTO monthly_coin_selection ({', '.join(f'"{c}"' for c in final_columns)}) VALUES %s;"""
                 data_to_insert = [tuple(row) for row in data_df.reindex(columns=final_columns).where(pd.notna(data_df), None).to_numpy()]
                 if data_to_insert:
                     execute_values(cursor, insert_query, data_to_insert)
+                    saved_count = len(data_to_insert)
                     conn.commit()
-                    logging.info(f"Успешно сохранено {len(data_to_insert)} записей.")
+                    logging.info(f"Успешно сохранено {saved_count} записей.")
             except Exception as e:
                 logging.error(f"Ошибка при работе с базой данных: {e}")
                 if conn: conn.rollback()
+                raise e 
             finally:
                 if conn: conn.close()
+            return saved_count
         
+        # --- Основной поток выполнения ---
         aggregated_list = aggregate_exchanges_data(all_exchanges_coins)
         if not aggregated_list:
             logging.info("Не найдено монет для анализа. Завершение.")
+            log_run_end(log_id, 'Успешно', 0, "Не найдено монет для анализа.")
             return
 
         df = pd.DataFrame(aggregated_list)
@@ -407,6 +509,7 @@ async def run_analysis_logic():
         
         enhanced_df = await analyze_and_enhance_data(df, exchanges_map)
         
+        saved_count = 0
         if not enhanced_df.empty:
             initial_count = len(enhanced_df)
             key_filter_columns = ['hurst_1d', 'entropy_1d']
@@ -417,15 +520,50 @@ async def run_analysis_logic():
             filtered_count = initial_count - len(final_df)
             saved_count = len(final_df)
             logging.info(f"Фильтрация завершена. Отсеяно: {filtered_count}. Будет сохранено: {saved_count}.")
-            save_to_database(final_df)
+            
+            saved_count = save_to_database(final_df)
+        
+        log_run_end(log_id, 'Успешно', saved_count)
 
+    except Exception as e:
+        error_message = f"Произошла критическая ошибка: {e}"
+        logging.error(error_message, exc_info=True)
+        log_run_end(log_id, 'Ошибка', 0, error_message)
     finally:
         logging.info("Закрытие всех соединений с биржами...")
-        close_tasks = [ex.close() for ex in exchanges_map.values() if ex]
-        await asyncio.gather(*close_tasks)
-        logging.info("Скрипт успешно завершил работу.")
+        if 'exchanges_map' in locals():
+            close_tasks = [ex.close() for ex in exchanges_map.values() if ex]
+            await asyncio.gather(*close_tasks)
+        logging.info("Скрипт завершил работу.")
 
 # --- ЧАСТЬ 5: ЭНДПОИНТЫ СЕРВЕРА ---
+
+@app.get("/logs")
+async def get_logs():
+    """Эндпоинт для получения последних 20 записей из лога запусков."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        # RealDictCursor возвращает строки в виде словарей, что удобно для JSON
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT * FROM script_run_logs ORDER BY start_time DESC LIMIT 20")
+        logs = cursor.fetchall()
+        cursor.close()
+        
+        # Преобразование объектов datetime в строки для JSON-сериализации
+        for log in logs:
+            if isinstance(log.get('start_time'), datetime.datetime):
+                log['start_time'] = log['start_time'].isoformat()
+            if isinstance(log.get('end_time'), datetime.datetime):
+                log['end_time'] = log['end_time'].isoformat()
+
+        return JSONResponse(content=logs)
+    except Exception as e:
+        logging.error(f"Ошибка при получении логов: {e}")
+        raise HTTPException(status_code=500, detail="Не удалось получить логи из базы данных.")
+    finally:
+        if conn:
+            conn.close()
 
 @app.post("/trigger")
 async def trigger_run(request: Request, background_tasks: BackgroundTasks):
