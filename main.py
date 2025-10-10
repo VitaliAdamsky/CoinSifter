@@ -102,7 +102,6 @@ def setup_database_tables():
         # Безопасное добавление колонок в таблицу результатов
         final_columns = { 'symbol': 'VARCHAR(255)', 'exchanges': 'TEXT[]', 'category': 'INTEGER', 'logoUrl': 'VARCHAR(255)', 'volatility_index': 'REAL', 'hurst_4h': 'REAL', 'hurst_8h': 'REAL', 'hurst_12h': 'REAL', 'hurst_1d': 'REAL', 'entropy_4h': 'REAL', 'entropy_8h': 'REAL', 'entropy_12h': 'REAL', 'entropy_1d': 'REAL', 'efficiency_index': 'REAL', 'trend_harmony_index': 'REAL', 'btc_correlation': 'REAL', 'returns_skewness': 'REAL', 'avg_wick_ratio': 'REAL', 'relative_strength_vs_btc': 'REAL', 'max_drawdown_percent': 'REAL', 'kurtosis': 'REAL', 'autocorrelation': 'REAL' }
         for col, col_type in final_columns.items():
-            # Используем psycopg2.sql для безопасной параметризации
             alter_query = sql.SQL("ALTER TABLE monthly_coin_selection ADD COLUMN IF NOT EXISTS {} {}").format(
                 sql.Identifier(col), sql.SQL(col_type)
             )
@@ -234,7 +233,7 @@ async def initialize_exchange(exchange_name):
             return None
         
         exchange = exchange_class({'options': {'defaultType': 'swap'}, 'timeout': 30000})
-        exchange.enableRateLimit = True # Включаем встроенный замедлитель запросов
+        exchange.enableRateLimit = True
         await exchange.load_markets()
 
         if BTC_SYMBOL not in exchange.markets:
@@ -536,21 +535,19 @@ async def run_analysis_logic():
             await asyncio.gather(*close_tasks)
         logging.info("Скрипт завершил работу.")
 
-# --- ЧАСТЬ 5: ЭНДПОИНТЫ СЕРВЕРА ---
+# --- ЧАСТЬ 5: ЭНДПОИНТЫ СЕРВЕР ---
 
 @app.get("/logs")
-async def get_logs():
+async def get_logs(request: Request):
     """Эндпоинт для получения последних 20 записей из лога запусков."""
     conn = None
     try:
         conn = get_db_connection()
-        # RealDictCursor возвращает строки в виде словарей, что удобно для JSON
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("SELECT * FROM script_run_logs ORDER BY start_time DESC LIMIT 20")
         logs = cursor.fetchall()
         cursor.close()
         
-        # Преобразование объектов datetime в строки для JSON-сериализации
         for log in logs:
             if isinstance(log.get('start_time'), datetime.datetime):
                 log['start_time'] = log['start_time'].isoformat()
@@ -561,6 +558,34 @@ async def get_logs():
     except Exception as e:
         logging.error(f"Ошибка при получении логов: {e}")
         raise HTTPException(status_code=500, detail="Не удалось получить логи из базы данных.")
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/logs/clear")
+async def clear_logs(request: Request):
+    """
+    Эндпоинт для полной очистки таблицы логов.
+    Требует авторизации по SECRET_TOKEN.
+    """
+    auth_header = request.headers.get('Authorization')
+    if not SECRET_TOKEN:
+        raise HTTPException(status_code=500, detail={"error": "SECRET_TOKEN не настроен на сервере."})
+    if not auth_header or auth_header != f"Bearer {SECRET_TOKEN}":
+        raise HTTPException(status_code=401, detail={"error": "Неверный токен авторизации."})
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("TRUNCATE TABLE script_run_logs RESTART IDENTITY;")
+        conn.commit()
+        cursor.close()
+        logging.info("Таблица логов была успешно очищена по запросу.")
+        return {"message": "Журнал логов успешно очищен."}
+    except Exception as e:
+        logging.error(f"Ошибка при очистке логов: {e}")
+        raise HTTPException(status_code=500, detail="Не удалось очистить таблицу логов.")
     finally:
         if conn:
             conn.close()
@@ -582,5 +607,5 @@ async def health_check():
 
 # --- Точка входа для Uvicorn (для локального теста) ---
 if __name__ == "__main__":
-    logging.info("Для локального запуска сервера используйте команду: uvicorn main:app ---reload")
+    logging.info("Для локального запуска сервера используйте команду: uvicorn main:app --reload")
 
