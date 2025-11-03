@@ -1,0 +1,61 @@
+[project]
+name = "coin-sifter"
+version = "0.1.0"
+description = "Sifting coins from crypto exchanges"
+authors = [{ name = "wikimodels", email = "young.wiki.models@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+
+dependencies = [
+  # Core stack
+  "numpy>=1.25,<2.0",
+  "pandas>=2.2,<2.3",
+
+  # TA indicators
+  "TA-Lib==0.6.7",                  # бинарная сборка
+  "pandas-ta-classic>=0.3.14b1",    # чистый TA-индикаторный стек
+
+  # Backtesting engine
+  "backtrader>=1.9.78.123",         # гибкий, точный
+
+  # Analytics & reporting
+  "quantstats>=0.0.70",             # отчёты по стратегии
+  "matplotlib>=3.8",                # графики equity, drawdown, сигналы
+
+  # CLI utils
+  "tqdm>=4.66",                     # прогресс-бары
+  "rich>=13.7",                     # форматированный вывод
+  "python-dateutil>=2.8",           # работа с датами
+  "ipython>=8.0",  # ✅ нужен для quantstats.reports
+  "plotly (>=6.3.0,<7.0.0)",
+  "youtube-transcript-api (>=1.2.2,<2.0.0)",
+  
+  # --- (ИЗМЕНЕНИЕ) ---
+  # "ccxt (>=4.5.6,<5.0.0)", (УДАЛЕНО)
+  "cctx (>=1.0.0,<2.0.0)", # (ОСТАВЛЕНО) - Это ccxt-pro
+  # --- (КОНЕЦ ИЗМЕНЕНИЯ) ---
+
+  "aiofiles (>=24.1.0,<25.0.0)",
+  "psycopg2 (>=2.9.10,<3.0.0)",
+  "uvicorn (>=0.38.0,<0.39.0)",
+  "fastapi (>=0.120.0,<0.121.0)",
+  "hurst (>=0.0.5,<0.0.6)",
+  "pymongo (>=4.15.3,<5.0.0)",
+  "tenacity (>=9.1.2,<10.0.0)",
+  "dotenv (>=0.9.9,<0.10.0)",
+  "python-dotenv (>=1.2.1,<2.0.0)",
+  "pytest (>=8.4.2,<9.0.0)",
+  "pytest-asyncio (>=1.2.0,<2.0.0)",
+  "pytest-mock (>=3.15.1,<4.0.0)",
+  "httpx (>=0.28.1,<0.29.0)",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.poetry]
+package-mode = false
