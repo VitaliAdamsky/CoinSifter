@@ -18,7 +18,7 @@ if not COIN_SIFTER_API:
 if not COIN_SIFTER_API.startswith(("http://", "https://")):
     COIN_SIFTER_API = "https://" + COIN_SIFTER_API
 
-url = f"{COIN_SIFTER_API}/api/v1/coins/filtered/csv"
+url = f"{COIN_SIFTER_API}/coins/filtered/csv"
 headers = {"X-Auth-Token": SECRET_TOKEN}
 
 # --- Функция для "пробуждения" сервера (опционально) ---

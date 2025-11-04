@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 health_router = APIRouter()
 
 @health_router.get("/health")
+@health_router.head("/health")  # ✅ ИСПРАВЛЕНИЕ
 def health_check():
     """Server health check."""
     return {"status": "ok"}
