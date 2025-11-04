@@ -61,28 +61,28 @@ async def add_process_time_header(request: Request, call_next):
 
 # --- Подключение роутеров ---
 log.info("Подключение API роутеров...")
-app.include_router(health_router, prefix="/api/v1", tags=["Health"])
-app.include_router(trigger_router, prefix="/api/v1", tags=["Triggers"])
-app.include_router(coins_router, prefix="/api/v1", tags=["Coins"])
-app.include_router(blacklist_router, prefix="/api/v1", tags=["Blacklist"])
-app.include_router(logs_router, prefix="/api/v1", tags=["Logs"])
+app.include_router(health_router, prefix="", tags=["Health"])
+app.include_router(trigger_router, prefix="", tags=["Triggers"])
+app.include_router(coins_router, prefix="", tags=["Coins"])
+app.include_router(blacklist_router, prefix="", tags=["Blacklist"])
+app.include_router(logs_router, prefix="", tags=["Logs"])
 
 # (НОВОЕ) Подключаем роутер качества данных
 app.include_router(
     data_quality_router, 
-    prefix="/api/v1", 
+    prefix="", 
 )
 
 # (ИЗМЕНЕНИЕ №1) Подключаем новый роутер
 app.include_router(
     formatted_symbols_router, 
-    prefix="/api/v1", 
+    prefix="", 
     tags=["Coins (Formatted)"]
 )
 
 
 # --- (БЛОК УДАЛЕН) ---
-# Весь @app.get("/api/v1/data-quality-report", ...) УДАЛЕН ОТСЮДА,
+# Весь @app.get("""/data-quality-report", ...) УДАЛЕН ОТСЮДА,
 # так как он перенесен в api/endpoints/data_quality.py
 # --- (КОНЕЦ УДАЛЕННОГО БЛОКА) ---
 

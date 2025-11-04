@@ -118,7 +118,7 @@ async def test_get_formatted_symbols_success(async_client, mocker):
     )
     
     # 2. Вызываем API
-    response = await async_client.get("/api/v1/coins/formatted-symbols")
+    response = await async_client.get("/coins/formatted-symbols")
     
     # 3. Проверки
     assert response.status_code == 200
@@ -149,7 +149,7 @@ async def test_get_formatted_symbols_empty_cache(async_client, mocker):
         return_value=[]
     )
     
-    response = await async_client.get("/api/v1/coins/formatted-symbols")
+    response = await async_client.get("/coins/formatted-symbols")
     
     assert response.status_code == 200
     data = response.json()

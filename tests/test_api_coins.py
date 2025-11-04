@@ -105,7 +105,7 @@ async def test_get_filtered_coins_json_blacklist_works(async_client, mocker):
     """
     # Моки уже установлены в 'async_client'
     
-    response = await async_client.get("/api/v1/coins/filtered")
+    response = await async_client.get("/coins/filtered")
     
     assert response.status_code == 200
     
@@ -125,7 +125,7 @@ async def test_get_filtered_coins_csv_blacklist_works(async_client, mocker):
     """
     # Моки уже установлены в 'async_client'
     
-    response = await async_client.get("/api/v1/coins/filtered/csv")
+    response = await async_client.get("/coins/filtered/csv")
     
     assert response.status_code == 200
     
@@ -160,7 +160,7 @@ async def test_get_filtered_coins_csv_all_filtered_404(async_client, mocker):
         return_value={"SOL"}
     )
     
-    response = await async_client.get("/api/v1/coins/filtered/csv")
+    response = await async_client.get("/coins/filtered/csv")
     
     # (Ожидаем 404, так как мы исправили coins.py)
     assert response.status_code == 404
