@@ -15,7 +15,8 @@ from api.security import verify_token
 # --- (Импорты для МОДУЛЬНЫХ тестов) ---
 from api.endpoints.formatted_symbols import (
     _format_tv_symbol,
-    _format_tv_exchange
+    _format_tv_exchange,
+    _extract_base_symbol_from_full # <-- (ИЗМЕНЕНИЕ) Импортируем новый хелпер
 )
 
 # --- Фикстуры (Настройка тестов API) ---
@@ -47,6 +48,18 @@ async def async_client(mocker):
 # ============================================================================
 # === (ЗАДАЧА 1) ТЩАТЕЛЬНЫЕ ТЕСТЫ ХЕЛПЕРОВ ===
 # ============================================================================
+
+# --- (ИЗМЕНЕНИЕ) Добавляем тест для хелпера _extract_base_symbol_from_full ---
+def test_extract_base_symbol_helper():
+    """
+    Тестирует хелпер '_extract_base_symbol_from_full' (извлечение базы).
+    """
+    assert _extract_base_symbol_from_full("BTC/USDT:USDT") == "BTC"
+    assert _extract_base_symbol_from_full("SOL/USDT:USDT") == "SOL"
+    assert _extract_base_symbol_from_full("1000PEPE/USDT:USDT") == "1000PEPE"
+    assert _extract_base_symbol_from_full("DOGE/USDT") == "DOGE"
+    assert _extract_base_symbol_from_full("") == ""
+# --- Конец Изменения ---
 
 def test_format_tv_symbol_helper():
     """
@@ -107,7 +120,7 @@ MOCK_CACHE_DATA = [
 async def test_get_formatted_symbols_success(async_client, mocker):
     """
     (ГЛАВНЫЙ ТЕСТ API)
-    Проверяет GET /coins/formatted-symbols.
+    Проверяет GET /coins/formatted-symbols (без ЧС).
     """
     
     # 1. Мокаем 'get_cached_coins_data'
@@ -116,6 +129,14 @@ async def test_get_formatted_symbols_success(async_client, mocker):
         new_callable=AsyncMock,
         return_value=MOCK_CACHE_DATA
     )
+    
+    # --- (ИЗМЕНЕНИЕ) Мокаем ЧС (пустой) ---
+    mocker.patch(
+        "api.endpoints.formatted_symbols.services.load_blacklist_from_mongo_async",
+        new_callable=AsyncMock,
+        return_value=set() # Пустой ЧС
+    )
+    # --- Конец Изменения ---
     
     # 2. Вызываем API
     response = await async_client.get("/coins/formatted-symbols")
@@ -136,11 +157,51 @@ async def test_get_formatted_symbols_success(async_client, mocker):
     
     assert data["symbols"] == expected_data
 
+# --- (ИЗМЕНЕНИЕ) ДОБАВЛЕН НОВЫЙ ТЕСТ ---
+@pytest.mark.asyncio
+async def test_get_formatted_symbols_blacklist_works(async_client, mocker):
+    """
+    (НОВЫЙ ТЕСТ)
+    Проверяет, что /coins/formatted-symbols фильтрует по ЧС.
+    """
+    
+    # 1. Мокаем 'get_cached_coins_data' (4 монеты)
+    mocker.patch(
+        "api.endpoints.formatted_symbols.services.get_cached_coins_data",
+        new_callable=AsyncMock,
+        return_value=MOCK_CACHE_DATA
+    )
+    
+    # 2. Мокаем 'load_blacklist_from_mongo_async' (баним SOL и DOGE)
+    mocker.patch(
+        "api.endpoints.formatted_symbols.services.load_blacklist_from_mongo_async",
+        new_callable=AsyncMock,
+        return_value={"SOL", "DOGE"} # Базовые символы
+    )
+    
+    # 3. Вызываем API
+    response = await async_client.get("/coins/formatted-symbols")
+    
+    # 4. Проверки
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Ожидаем 2 монеты (ATOM и ALGO)
+    assert data["count"] == 2
+    
+    expected_data = [
+        {"symbol": "ATOMUSDT", "exchanges": ["bybit"]},
+        {"symbol": "ALGOUSDT", "exchanges": ["binance"]},
+    ]
+    
+    assert data["symbols"] == expected_data
+# --- Конец Изменения ---
+
 @pytest.mark.asyncio
 async def test_get_formatted_symbols_empty_cache(async_client, mocker):
     """
     Тестирует GET /coins/formatted-symbols, если кэш пуст.
-    (Этот тест не меняется)
+    (Этот тест не меняется, но ЧС тоже надо мокнуть)
     """
     
     mocker.patch(
@@ -148,6 +209,14 @@ async def test_get_formatted_symbols_empty_cache(async_client, mocker):
         new_callable=AsyncMock,
         return_value=[]
     )
+    
+    # --- (ИЗМЕНЕНИЕ) Мокаем ЧС (пустой) ---
+    mocker.patch(
+        "api.endpoints.formatted_symbols.services.load_blacklist_from_mongo_async",
+        new_callable=AsyncMock,
+        return_value=set() # Пустой ЧС
+    )
+    # --- Конец Изменения ---
     
     response = await async_client.get("/coins/formatted-symbols")
     
