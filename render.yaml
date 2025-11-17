@@ -1,29 +1,24 @@
 # Blueprint for Render Deployment
-# This file tells Render how to build and run the project.
-
-databases:
-  # The PostgreSQL Database
-  - name: coin-sifter-db
-    plan: free # Use the free database plan
-    region: frankfurt
+# (ИЗМЕНЕНО: Миграция на MongoDB)
 
 services:
   # The Python Web Server (FastAPI)
   - type: web
-    name: coin-sifter-server
+    name: bazzar-kline-data-fetcher # (Название обновлено)
     env: python
     plan: free # Use the free instance type
-    region: frankfurt # Deploy in Europe to avoid geo-blocking
+    region: frankfurt # Deploy in Europe
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: coin-sifter-db
-          property: connectionString
+      # (УДАЛЕНО) Блок DATABASE_URL (PostgreSQL) удален.
+
       - key: PYTHON_VERSION
         value: "3.12.0"
       - key: SECRET_TOKEN
-        generateValue: true # Render will automatically generate a secure secret key А
+        generateValue: true # Render will automatically generate a secure secret key
 
+      # (ДОБАВЛЕНО) Секрет для подключения к MongoDB
+      - key: MONGO_DB_URL
+        sync: false # ❗️ Необходимо установить в панели Render

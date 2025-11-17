@@ -13,10 +13,10 @@ import gc
 # Импортируем модули проекта
 import config
 from services import data_fetcher
-from services import mongo_service
+from services import mongo_service  # <-- Используем Mongo-сервис
 
-from database import clear_existing_data, save_coins_to_db
-from metrics.ranking import update_volume_categories
+# (ИЗМЕНЕНИЕ) Импортируем 'calculate_volume_categories'
+from metrics.ranking import calculate_volume_categories 
 
 # Импортируем модули Этапов
 from .stage_0_prereqs import load_btc_and_blacklist
@@ -123,26 +123,41 @@ async def analysis_logic(run_id, log_prefix=""):
             
         log.info(f"{log_prefix} (Этап 3) ✅ Успешно проанализировано {total_successful} монет.")
 
-        # --- ЭТАП 4: СОХРАНЕНИЕ В БД ---
-        log_prefix_4 = f"{log_prefix}[Этап 4]"
-        log.info(f"{log_prefix_4} Сохранение {total_successful} монет в БД...")
+        # --- (ИЗМЕНЕНИЕ) ЭТАП 5 (РАНГИ) ПЕРЕМЕЩЕН ПЕРЕД ЭТАПОМ 4 ---
+        log_prefix_5 = f"{log_prefix}[Этап 5]"
         try:
-            clear_existing_data(log_prefix_4)
-            saved_count = save_coins_to_db(final_data_to_save, log_prefix_4)
-            log.info(f"{log_prefix_4} ✅ Успешно сохранено {saved_count} монет.")
+            log.info(f"{log_prefix_5} Расчет категорий (рангов) объема...")
+            # 1. Вызываем новую in-memory функцию
+            rank_map = calculate_volume_categories(final_data_to_save, log_prefix_5)
+            
+            # 2. Добавляем 'category' к данным ПЕРЕД сохранением
+            if rank_map:
+                for coin in final_data_to_save:
+                    rank = rank_map.get(coin['full_symbol'])
+                    if rank:
+                        coin['category'] = int(rank)
+            log.info(f"{log_prefix_5} ✅ Категории успешно рассчитаны и добавлены.")
+            
         except Exception as e:
-            log.error(f"{log_prefix_4} ❌ Ошибка при сохранении в БД: {e}", exc_info=True)
+            log.error(f"{log_prefix_5} ❌ Ошибка при расчете Категорий (Рангов): {e}", exc_info=True)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ЭТАПА 5 ---
+
+        # --- ЭТАП 4: СОХРАНЕНИЕ В БД (MONGODB) ---
+        log_prefix_4 = f"{log_prefix}[Этап 4]"
+        log.info(f"{log_prefix_4} Сохранение {total_successful} монет в MongoDB...")
+        try:
+            # (Логика clear_existing_data() теперь внутри save_coins_to_mongo)
+            saved_count = await mongo_service.save_coins_to_mongo(final_data_to_save, log_prefix_4)
+            log.info(f"{log_prefix_4} ✅ Успешно сохранено {saved_count} монет в MongoDB.")
+        
+        except Exception as e:
+            log.error(f"{log_prefix_4} ❌ Ошибка при сохранении в MongoDB: {e}", exc_info=True)
             
         del final_data_to_save
         gc.collect()
             
-        # --- ЭТАП 5: РАСЧЕТ КАТЕГОРИЙ ---
-        log_prefix_5 = f"{log_prefix}[Этап 5]"
-        try:
-            update_volume_categories(log_prefix=log_prefix_5)
-        except Exception as e:
-            log.error(f"{log_prefix_5} ❌ Ошибка при расчете Категорий (Рангов): {e}", exc_info=True)
-            
+        # (ИЗМЕНЕНИЕ) ЭТАП 5 УДАЛЕН ОТСЮДА
+        
         # --- ЗАВЕРШЕНИЕ ---
         total_time_seconds = time.time() - start_time
         total_skipped = sum(len(s) for s in skipped_coins.values())
@@ -155,7 +170,7 @@ async def analysis_logic(run_id, log_prefix=""):
         
         for reason, symbols in sorted_skipped:
             if symbols:
-                 log.info(f"{log_prefix} ├─ {reason}: {len(symbols)} монет")
+                log.info(f"{log_prefix} ├─ {reason}: {len(symbols)} монет")
                  
         log.info(f"{log_prefix} └─ Общее кол-во пропусков: {total_skipped} монет")
         log.info(f"{log_prefix} " + "=" * 62)
@@ -169,7 +184,8 @@ async def analysis_logic(run_id, log_prefix=""):
         log.info(f"{log_prefix} ║ Найдено ('Зрелых'): {total_mature:>40} ║")
         log.info(f"{log_prefix} ║ Успешно проанализировано: {total_successful:>33} ║")
         log.info(f"{log_prefix} ║ Ошибок (всего): {total_skipped:>41} ║") 
-        log.info(f"{log_prefix} ║ Сохранено в БД: {saved_count:>42} ║")
+        # (ИЗМЕНЕНИЕ) Обновлен текст
+        log.info(f"{log_prefix} ║ Сохранено в MongoDB: {saved_count:>38} ║")
         log.info(f"{log_prefix} ╚{'═' * 60}╝")
         
         return saved_count, f"Анализ завершен. Сохранено {saved_count} из {total_successful} 'зрелых' монет."

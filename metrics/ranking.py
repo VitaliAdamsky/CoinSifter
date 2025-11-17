@@ -1,89 +1,82 @@
 # metrics/ranking.py
+"""
+(МИГРАЦИЯ НА MONGO)
+Этот модуль рассчитывает категории (ранги) объема.
+Функция update_volume_categories (которая работала с PostgreSQL) 
+заменена на calculate_volume_categories, которая работает 
+в памяти со списком словарей.
+"""
 
 import logging
 import pandas as pd
 import numpy as np
-import psycopg2
-from psycopg2 import sql
-from psycopg2.extras import execute_values, RealDictCursor
+from typing import List, Dict, Any
+
+# (ИЗМЕНЕНИЕ) Импорты PostgreSQL удалены
+# import psycopg2
+# from psycopg2 import sql
+# from psycopg2.extras import execute_values, RealDictCursor
+# from database import get_db_connection
 
 import config
-# --- ИЗМЕНЕНИЕ ---
-from database import get_db_connection
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 log = logging.getLogger(__name__)
 
 
-def update_volume_categories(table_name="monthly_coin_selection", log_prefix=""):
+def calculate_volume_categories(
+    coins: List[Dict[str, Any]], 
+    log_prefix=""
+) -> Dict[str, int]:
     """
-    Calculate and update volume categories (ranks 1-6) based on 24h volume.
+    (ИЗМЕНЕНО) Рассчитывает категории объема (Ранги 1-6) на основе 
+    списка монет (dict) в памяти.
     
-    Higher rank = higher volume:
-    - Category 6: Top 16.7% by volume (highest)
-    - Category 5: Next 16.7%
-    - Category 4: Next 16.7%
-    - Category 3: Next 16.7%
-    - Category 2: Next 16.7%
-    - Category 1: Bottom 16.7% (lowest)
-    
-    Args:
-        table_name: Database table name
-        log_prefix: Prefix for log messages
+    Возвращает словарь-карту: {full_symbol: rank}
     """
-    log.info(f"{log_prefix}--- Stage 4: Calculating Volume Categories (Ranks 1-6) ---")
+    log.info(f"{log_prefix}--- Расчет Категорий Объема (Ранги 1-6) в памяти ---")
     
-    conn = None
+    if not coins:
+        log.warning(f"{log_prefix}Нет монет для расчета категорий.")
+        return {}
+
     try:
-        # --- ИЗМЕНЕНИЕ ---
-        conn = get_db_connection()
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        # 1. Загружаем данные в DataFrame
+        # Нам нужны только 'full_symbol' и 'volume_24h_usd'
+        df = pd.DataFrame(
+            [
+                {
+                    "full_symbol": c.get("full_symbol"), 
+                    "volume_24h_usd": c.get("volume_24h_usd")
+                } 
+                for c in coins
+            ]
+        )
         
-        # Fetch volume data
-        cursor.execute(f"SELECT full_symbol, volume_24h_usd FROM {table_name}")
-        data = cursor.fetchall()
-        
-        if not data:
-            log.warning(f"{log_prefix}No coins in database for category calculation")
-            return
-        
-        df = pd.DataFrame(data)
-        
-        # Calculate ranks (1-6) using quantile-based ranking
-        # duplicates='drop' handles coins with identical volume
+        if df.empty:
+            log.warning(f"{log_prefix}DataFrame пуст после извлечения данных.")
+            return {}
+            
+        # 2. Рассчитываем ранги (1-6)
+        # (Логика pd.qcut сохранена из оригинальной функции)
+        # duplicates='drop' обрабатывает монеты с идентичным объемом
         df['rank'] = pd.qcut(
             df['volume_24h_usd'],
             q=6,
             labels=False,
             duplicates='drop'
-        ) + 1  # pd.qcut uses 0-5, we need 1-6
+        ) + 1  # pd.qcut использует 0-5, нам нужно 1-6
         
-        # Prepare data for bulk update
-        update_data = list(df[['rank', 'full_symbol']].itertuples(index=False, name=None))
+        # 3. Преобразуем в словарь для быстрого поиска
+        # {full_symbol: rank}
+        rank_map = pd.Series(
+            df['rank'].values, 
+            index=df['full_symbol']
+        ).to_dict()
         
-        # Execute bulk UPDATE
-        query = sql.SQL("""
-            UPDATE {table} SET
-                category = data.rank
-            FROM (VALUES %s) AS data (rank, symbol)
-            WHERE {table}.full_symbol = data.symbol;
-        """).format(
-            table=sql.Identifier(table_name)
-        )
+        log.info(f"{log_prefix}✅ Категории (ранги 1-6) успешно рассчитаны для {len(rank_map)} монет.")
         
-        execute_values(cursor, query, update_data)
-        conn.commit()
-        
-        log.info(f"{log_prefix}✅ Volume categories (ranks 1-6) successfully calculated and saved for {len(df)} coins.")
-    
+        return rank_map
+
     except Exception as e:
-        log.error(f"{log_prefix}❌ Error calculating volume categories: {e}", exc_info=True)
-        if conn:
-            conn.rollback()
-    
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        log.error(f"{log_prefix}❌ Ошибка при расчете категорий объема: {e}", exc_info=True)
+        return {}

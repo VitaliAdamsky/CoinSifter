@@ -1,34 +1,33 @@
 # api/endpoints/logs.py
 
 import logging
-import asyncio  # (Этот импорт был в вашем файле)
+import asyncio
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 
-# (Импорт пропущен) Импортируем database-функцию
-from database import fetch_logs_from_db
+# (ИЗМЕНЕНИЕ) Импортируем 'mongo_service'
+from services import mongo_service
+# (ИЗМЕНЕНИЕ) Удален импорт 'database'
+# from database import fetch_logs_from_db
 
-# (Импорт пропущен) Импортируем наш модуль безопасности
+# (ИЗМЕНЕНИЕ) Импортируем наш модуль безопасности
 from ..security import verify_token
 
-# --- Настройка (Пропущена) ---
+# --- Настройка ---
 log = logging.getLogger(__name__)
 
-# --- (!!!) ВОТ ОШИБКА (!!!) ---
-# (Пропущено) Эта строка ОБЯЗАТЕЛЬНА.
+# (ИЗМЕНЕНИЕ) APIRouter
 logs_router = APIRouter()
-# --------------------------------
 
 # --- API Эндпоинты (Логи) ---
 
 @logs_router.get("/logs", dependencies=[Depends(verify_token)])
 async def get_logs():
-    """(V3) Получает ВСЕ логи (PostgreSQL)."""
+    """(V3) Получает ВСЕ логи (ИЗМЕНЕНО: из MongoDB)."""
     try:
-        loop = asyncio.get_event_loop()  # (Это из вашего файла)
-        # (Это из вашего файла)
-        logs = await loop.run_in_executor(None, fetch_logs_from_db, 100) 
+        # (ИЗМЕНЕНИЕ) Заменяем 'fetch_logs_from_db' на 'get_mongo_logs'
+        logs = await mongo_service.get_mongo_logs(limit=100) 
         
         return JSONResponse(content=jsonable_encoder({"count": len(logs), "logs": logs}))
     

@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 init(autoreset=True)
 
 # --- Константы ---
-BASE_URL = "http://127.0.0.1:8000/api/v1"
+# (ИЗМЕНЕНИЕ) Убран префикс /api/v1
+BASE_URL = "http://127.0.0.1:8000" 
 POLL_MAX_WAIT_SECONDS = 8800 # 30 минут
 TRIGGER_TIMEOUT = 10         # Таймаут для /trigger
 POLL_TIMEOUT = 5             # Таймаут для опроса /logs/{id}
@@ -145,11 +146,13 @@ def trigger_analysis(headers):
             return None
         
         try:
+            # (ИЗМЕНЕНИЕ) /api/v1 убран
             response = requests.post(f"{BASE_URL}/trigger", headers=headers, timeout=TRIGGER_TIMEOUT)
             
             if response.status_code == 200:
                 data = response.json()
                 log_id = data.get('run_id') # (ИЗМЕНЕНИЕ №2) V3 router.py возвращает 'run_id'
+                
                 log.info(f"{Fore.GREEN}✓ Анализ запущен успешно")
                 log.info(f"{Fore.CYAN}  Log ID: {log_id}")
                 return log_id
@@ -174,7 +177,7 @@ def trigger_analysis(headers):
             # (ИСПРАВЛЕНО) Это больше не "смертельная" ошибка.
             log.warning(f"{Fore.YELLOW}⚠ Сервер недоступен (ConnectionError). Ожидание...")
             print(f"Ожидание запуска сервера... [{int(elapsed)}s]", end="\r", flush=True)
-            time.sleep(30) # Ждем 2 секунды и пробуем снова
+            time.sleep(2) # Ждем 2 секунды и пробуем снова
             
         except Exception as e:
             log.error(f"{Fore.RED}✗ Неизвестная ошибка: {e}")
@@ -201,12 +204,12 @@ def poll_logs(log_id, headers):
                 log.error(f"{Fore.RED}✗ ТАЙМАУТ: Анализ не завершился за {POLL_MAX_WAIT_SECONDS}с")
                 return False
             
-            # (ИЗМЕНЕНИЕ №3) Обращаемся к /logs, а не /logs/{id}
+            # (ИЗМЕНЕНИЕ) /api/v1 убран
             response = requests.get(f"{BASE_URL}/logs", headers=headers, timeout=POLL_TIMEOUT)
             
             if response.status_code != 200:
                 log.error(f"{Fore.RED}✗ Ошибка получения лога: {response.status_code}")
-                time.sleep(30)
+                time.sleep(10)
                 continue
                 
             data = response.json()
@@ -221,7 +224,7 @@ def poll_logs(log_id, headers):
             
             if target_log is None:
                 log.warning(f"{Fore.YELLOW}⚠ Не удалось найти log_id {log_id} в ответе /logs. Повтор...")
-                time.sleep(30)
+                time.sleep(10)
                 continue
 
             status = target_log.get('status', 'Неизвестно')
@@ -260,21 +263,21 @@ def poll_logs(log_id, headers):
                 log.error(f"{Fore.YELLOW}  Проверьте логи сервера для подробностей")
                 return False
                 
-            time.sleep(30)
+            time.sleep(10)
 
         except requests.Timeout:
             log.warning(f"{Fore.YELLOW}⚠ Таймаут запроса лога. Повторная попытка...")
-            time.sleep(30)
+            time.sleep(10)
         except requests.ConnectionError:
             log.error(f"{Fore.RED}⚠ Потеряно соединение с сервером. Переподключение...")
-            time.sleep(30)
+            time.sleep(10)
         except KeyboardInterrupt:
             print()
             log.warning(f"{Fore.YELLOW}Прервано пользователем")
             return False
         except Exception as e:
             log.error(f"{Fore.RED}✗ Ошибка при опросе логов: {e}")
-            time.sleep(30)
+            time.sleep(10)
 
 
 # --- (РЕФАКТОРИНГ) Разделение логики и вывода ---
@@ -285,6 +288,7 @@ def _fetch_and_validate_coins_data(headers):
     Возвращает (coins, all_errors, valid_count, invalid_count) или None при ошибке.
     """
     try:
+        # (ИЗМЕНЕНИЕ) /api/v1 убран
         response = requests.get(f"{BASE_URL}/coins/filtered", headers=headers, timeout=FETCH_TIMEOUT)
         
         if response.status_code != 200:
@@ -486,6 +490,7 @@ def fetch_filtered_coins(headers):
         if len(coins) > 1:
             log.info(f"\n{Style.DIM}... и еще {len(coins) - 1} монет (показан только первый)")
     
+    
     # 4. ИТОГОВАЯ СТАТИСТИКА
     log.info(f"\n{Style.BRIGHT}{'─'*60}")
     log.info(f"{Style.BRIGHT}ИТОГОВАЯ СТАТИСТИКА (JSON)")
@@ -507,6 +512,7 @@ def fetch_filtered_coins_csv(headers):
     log.info(f"{Style.BRIGHT}{'='*60}")
     
     try:
+        # (ИЗМЕНЕНИЕ) /api/v1 убран
         response = requests.get(f"{BASE_URL}/coins/filtered/csv", headers=headers, timeout=FETCH_TIMEOUT)
         
         if response.status_code != 200:
