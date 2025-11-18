@@ -143,7 +143,7 @@ async def get_formatted_symbols():
         
         return JSONResponse(content={
             "count": len(formatted_list),
-            "data": formatted_list
+            "symbols": formatted_list
         })
         
     except HTTPException:

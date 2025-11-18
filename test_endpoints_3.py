@@ -16,8 +16,8 @@ except ImportError:
 
 # --- (ПЕРЕКЛЮЧАТЕЛЬ) ---
 # Закомментируйте/Раскомментируйте нужный URL
-BASE_URL = "http://127.0.0.1:8000"  # Для локального теста
-# BASE_URL = os.getenv("COIN_SIFTER_URL", "https://coin-sifter-server.onrender.com") # Для Render
+# BASE_URL = "http://127.0.0.1:8000"  # Для локального теста
+BASE_URL = os.getenv("COIN_SIFTER_URL") # Для Render
 # --- (КОНЕЦ ПЕРЕКЛЮЧАТЕЛЯ) ---
 
 # 2. Ваш секретный токен
