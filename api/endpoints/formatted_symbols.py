@@ -5,95 +5,111 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from typing import List, Dict, Any
 
-# Import project modules
-import services 
+# --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
+# (БЫЛО) import services 
+# (СТАЛО) Импортируем НАПРЯМУЮ
+from services.data_cache_service import get_cached_coins_data
+from services.mongo_service import load_blacklist_from_mongo_async
+# --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
+
 from api.security import verify_token
 
 # --- Setup ---
 log = logging.getLogger(__name__)
 formatted_symbols_router = APIRouter()
 
-# ============================================================================
-# === Вспомогательные функции (Логика) ===
+# ============================================================================\r
+# === Вспомогательные функции (Логика) ===\r
 # ============================================================================
 
-# --- ИЗМЕНЕНИЕ: Добавлена функция из coins.py для проверки ЧС ---
 def _extract_base_symbol_from_full(full_symbol: str) -> str:
     """
     Извлекает базовый символ из полного формата (e.g., 'SOL/USDT:USDT' -> 'SOL').
-    Это обеспечивает единую логику сравнения с Черным списком.
     (Скопировано из api/endpoints/coins.py)
     """
     if not full_symbol:
         return ""
-    # Базовый символ - это часть до первого слэша (/)
     ccxt_symbol = full_symbol.split(':')[0] 
     return ccxt_symbol.split('/')[0]
-# --- Конец Изменения ---
+
 
 def _format_tv_symbol(full_tv_symbol: str) -> str:
     """
     (ИЗМЕНЕНИЕ №1)
-    Преобразует ПОЛНЫЙ символ (напр., 'BTC/USDT:USDT') в формат 
-    TradingView (напр., 'BTCUSDT').
+    Преобразует ПОЛНЫЙ символ (e.g., "BTC/USDT:USDT") 
+    в формат TradingView (e.g., "BTCUSDT.P" -> "BTCUSDT").
     """
-    if not full_tv_symbol:
-        return ""
-    
-    # 1. Отсекаем :USDT (или :BTC и т.д.)
-    # 'BTC/USDT:USDT' -> 'BTC/USDT'
-    ccxt_symbol = full_tv_symbol.split(':')[0]
+    # 1. Убираем ':USDT'
+    ccxt_symbol = full_tv_symbol.split(':')[0] # "BTC/USDT"
     
     # 2. Убираем '/'
-    # 'BTC/USDT' -> 'BTCUSDT'
-    return ccxt_symbol.replace("/", "")
+    tv_symbol = ccxt_symbol.replace('/', '') # "BTCUSDT"
+    
+    # 3. (ИЗМЕНЕНИЕ №1) Убираем ".P" (Bybit)
+    if tv_symbol.endswith('.P'):
+        tv_symbol = tv_symbol[:-2]
+        
+    return tv_symbol
 
 def _format_tv_exchange(exchange_id: str) -> str:
     """
-    Преобразует ID биржи (напр., 'binanceusdm') в формат 
-    TradingView (напр., 'binance').
+    Преобразует ID биржи (e.g., 'binanceusdm') 
+    в формат TradingView (e.g., 'BINANCE').
     """
-    if exchange_id == "binanceusdm":
-        return "binance"
-    return exchange_id
+    if 'binance' in exchange_id:
+        return 'BINANCE'
+    elif 'bybit' in exchange_id:
+        return 'BYBIT'
+    # Добавьте другие биржи здесь, если нужно
+    return exchange_id.upper()
 
-# ============================================================================
-# === Эндпоинт ===
+
+# ============================================================================\r
+# === Эндпоинт (Formatted Symbols) ===\r
 # ============================================================================
 
-@formatted_symbols_router.get("/coins/formatted-symbols", dependencies=[Depends(verify_token)])
+@formatted_symbols_router.get(
+    "/coins/formatted-symbols", 
+    dependencies=[Depends(verify_token)]
+)
 async def get_formatted_symbols():
     """
-    Возвращает отформатированный список монет и бирж 
-    для использования в TradingView.
-    (ИЗМЕНЕНО: Теперь фильтрует по Черному списку)
+    (V3) Возвращает монеты из КЭША (MongoDB) в 
+    специальном формате для TradingView.
     """
-    log_prefix = "[API /coins/formatted-symbols] "
-    log.info(f"{log_prefix} Запрос отформатированного списка...")
+    log_prefix = "[API /coins/formatted-symbols GET]"
+    log.info(f"{log_prefix} Запрошены монеты (формат TradingView)...")
     
     try:
-        # --- ИЗМЕНЕНИЕ: Шаг 1. Загрузка Blacklist ---
-        blacklist = await services.load_blacklist_from_mongo_async(log_prefix)
-        log.info(f"{log_prefix} Загружен Черный список (MongoDB): {len(blacklist)} монет.")
-        # --- Конец Изменения ---
-        
-        # Шаг 2. Загрузка ВСЕХ монет
-        all_coins = await services.get_cached_coins_data(
+        # Шаг 1: Получаем данные из кэша
+        # --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
+        # (БЫЛО) all_coins = await services.get_cached_coins_data(...)
+        # (СТАЛО)
+        all_coins = await get_cached_coins_data(
+            force_reload=False, 
             log_prefix=f"{log_prefix} [Cache]"
         )
+        # --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
+
+        # Шаг 2: Получаем Черный список
+        # --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
+        # (БЫЛО) blacklist = await services.load_blacklist_from_mongo_async(...)
+        # (СТАЛО)
+        blacklist = await load_blacklist_from_mongo_async(
+            log_prefix=f"{log_prefix} [Blacklist]"
+        )
+        # --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
         
         if not all_coins:
             log.warning(f"{log_prefix} Кэш пуст.")
-            return JSONResponse(content={"count": 0, "symbols": []})
-
-        # Шаг 3. Фильтрация и Форматирование
+            raise HTTPException(status_code=404, detail="No data available in cache.")
+            
+        # Шаг 3: Обработка и форматирование
         formatted_list = []
         coins_filtered_by_blacklist = 0
         
         for coin in all_coins:
-            
-            # (ИЗМЕНЕНИЕ №1) Мы читаем поле 'symbol', 
-            # которое (как вы указали) содержит 'BTC/USDT:USDT'
+            # (ИЗМЕНЕНИЕ №1) 'symbol' в MongoDB - это 'full_tv_symbol'
             full_tv_symbol = coin.get('symbol') 
             exchanges = coin.get('exchanges', [])
             
@@ -101,7 +117,6 @@ async def get_formatted_symbols():
                 continue
 
             # --- ИЗМЕНЕНИЕ: Шаг 3.1. Проверка по Blacklist ---
-            # (Используем 'full_tv_symbol', т.к. в кэше он 'symbol')
             base_symbol = _extract_base_symbol_from_full(full_tv_symbol)
             
             if base_symbol in blacklist:
@@ -128,9 +143,11 @@ async def get_formatted_symbols():
         
         return JSONResponse(content={
             "count": len(formatted_list),
-            "symbols": formatted_list
+            "data": formatted_list
         })
-
+        
+    except HTTPException:
+        raise 
     except Exception as e:
-        log.error(f"{log_prefix} Ошибка: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        log.error(f"{log_prefix} ❌ Ошибка: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
