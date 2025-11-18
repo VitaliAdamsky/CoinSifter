@@ -17,7 +17,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 # --- Константы (Копия из test_api.py) ---
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("COIN_SIFTER_URL", "http://127.0.0.1:8000")
+
 POLL_MAX_WAIT_SECONDS = 4800 # 80 минут
 SERVER_WAIT_TIMEOUT = 20     
 TRIGGER_TIMEOUT = 10         

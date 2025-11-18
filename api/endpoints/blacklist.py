@@ -4,7 +4,13 @@ import logging
 import re
 from fastapi import APIRouter, HTTPException, Depends
 
-import services
+# --- (ИСПРАВЛЕНИЕ) ---
+# (БЫЛО) import services
+# (СТАЛО) Импортируем НАПРЯМУЮ
+from services.mongo_service import load_blacklist_from_mongo_async
+# --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
+
+# Import our security module
 from api.security import verify_token
 
 # --- Setup ---
@@ -20,9 +26,13 @@ SYMBOL_REGEX = re.compile(r"^[A-Z0-9/:-]{1,50}$")
 async def get_blacklist():
     """(V3) Gets the ENTIRE Blacklist (MongoDB)."""
     try:
-        blacklist = await services.load_blacklist_from_mongo_async(
+        # --- (ИСПРАВЛЕНИЕ) ---
+        # (БЫЛО) blacklist = await services.load_blacklist_from_mongo_async(...)
+        # (СТАЛО) Вызываем напрямую
+        blacklist = await load_blacklist_from_mongo_async(
             log_prefix="[API /blacklist GET]"
         )
+        # --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
         
         return {"count": len(blacklist), "blacklist": list(blacklist)}
     except Exception as e:
