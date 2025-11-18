@@ -4,7 +4,7 @@
 services:
   # The Python Web Server (FastAPI)
   - type: web
-    name: bazzar-kline-data-fetcher # (Название обновлено)
+    name: coin-sifter-server # (Название обновлено)
     env: python
     plan: free # Use the free instance type
     region: frankfurt # Deploy in Europe
