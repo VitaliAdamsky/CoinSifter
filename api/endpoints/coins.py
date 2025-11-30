@@ -23,8 +23,8 @@ log = logging.getLogger(__name__)
 coins_router = APIRouter()
 
 
-# ============================================================================\r
-# === _extract_base_symbol_from_full ===\r
+# ============================================================================
+# === _extract_base_symbol_from_full ===
 # ============================================================================
 def _extract_base_symbol_from_full(full_symbol: str) -> str:
     """
@@ -33,42 +33,66 @@ def _extract_base_symbol_from_full(full_symbol: str) -> str:
     """
     if not full_symbol:
         return ""
-    # Базовый символ - это часть до первого слэша (/)\r
+    # Базовый символ - это часть до первого слэша (/)
     ccxt_symbol = full_symbol.split(':')[0] 
     return ccxt_symbol.split('/')[0]
 
 
-# ============================================================================\r
-# === ЗАЩИЩЁННЫЙ ЭНДПОИНТ (JSON) ===\r
+# ============================================================================
+# === ЗАЩИЩЁННЫЙ ЭНДПОИНТ (JSON) ===
 # ============================================================================
 @coins_router.get("/coins/filtered", dependencies=[Depends(verify_token)])
 async def get_filtered_coins():
     """
     (V3) Возвращает ВСЕ отфильтрованные монеты из КЭША (MongoDB).
-    (ИЗМЕНЕНО) Удалена вся логика фильтрации - она теперь в КЭШЕ.
+    (ИЗМЕНЕНО) Добавлена фильтрация по Черному списку.
     """
     log_prefix = "[API /coins/filtered GET]"
     log.info(f"{log_prefix} Запрошены монеты (JSON) из кэша...")
     
     try:
-        # --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
-        # (БЫЛО) data = await services.get_cached_coins_data(...)
-        # (СТАЛО)
-        data = await get_cached_coins_data(
+        # --- (ИЗМЕНЕНИЕ №1) ---
+        
+        # 1. Получаем данные из кэша
+        all_coins = await get_cached_coins_data(
             force_reload=False, 
             log_prefix=f"{log_prefix} [Cache]"
         )
-        # --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
         
-        if not data:
+        # 2. Получаем Черный список
+        blacklist = await load_blacklist_from_mongo_async(
+            log_prefix=f"{log_prefix} [Blacklist]"
+        )
+        
+        if not all_coins:
             log.warning(f"{log_prefix} Кэш пуст.")
             raise HTTPException(status_code=404, detail="No data available in cache.")
             
-        log.info(f"{log_prefix} ✅ Успешно. Возвращаем {len(data)} монет из кэша.")
+        # 3. Фильтруем по Blacklist
+        filtered_coins = []
+        coins_filtered_by_blacklist = 0
+        
+        for coin in all_coins:
+            # (Используем 'symbol' из БД, который = full_symbol)
+            base_symbol = _extract_base_symbol_from_full(coin['symbol']) 
+            if base_symbol not in blacklist:
+                filtered_coins.append(coin)
+            else:
+                coins_filtered_by_blacklist += 1
+        
+        count_after = len(filtered_coins)
+
+        log.info(f"{log_prefix} Blacklist filtering: {len(all_coins)} -> {count_after} coins.")
+        if coins_filtered_by_blacklist > 0:
+            log.warning(f"{log_prefix} 🚫 Отсеяно по Черному списку: {coins_filtered_by_blacklist} монет.")
+            
+        # --- (КОНЕЦ ИЗМЕНЕНИЯ №1) ---
+            
+        log.info(f"{log_prefix} ✅ Успешно. Возвращаем {count_after} монет.")
         
         return JSONResponse(content=jsonable_encoder({
-            "count": len(data),
-            "data": data
+            "count": count_after,
+            "data": filtered_coins # Возвращаем отфильтрованный список
         }))
         
     except HTTPException:
@@ -78,36 +102,29 @@ async def get_filtered_coins():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# ============================================================================\r
-# === ПУБЛИЧНЫЙ ЭНДПОИНТ (CSV) ===\r
+# ============================================================================
+# === ПУБЛИЧНЫЙ ЭНДПОИНТ (CSV) ===
 # ============================================================================
 @coins_router.get("/coins/filtered/csv")
 async def get_filtered_coins_csv():
     """
     (V3) Возвращает ВСЕ монеты из КЭША (MongoDB) в CSV формате.
+    (Логика здесь УЖЕ БЫЛА ПРАВИЛЬНОЙ и фильтровала по ЧС)
     """
     log_prefix = "[API /coins/filtered/csv GET]"
     log.info(f"{log_prefix} Запрошены монеты (CSV)...")
 
     try:
         # 1. Получаем данные из кэша
-        # --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
-        # (БЫЛО) all_coins = await services.get_cached_coins_data(...)
-        # (СТАЛО)
         all_coins = await get_cached_coins_data(
             force_reload=False, 
             log_prefix=f"{log_prefix} [Cache]"
         )
-        # --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
 
         # 2. Получаем Черный список (для фильтрации на лету)
-        # --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
-        # (БЫЛО) blacklist = await services.load_blacklist_from_mongo_async(...)
-        # (СТАЛО)
         blacklist = await load_blacklist_from_mongo_async(
             log_prefix=f"{log_prefix} [Blacklist]"
         )
-        # --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
         
         if not all_coins:
             log.warning(f"{log_prefix} Кэш пуст.")

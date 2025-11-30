@@ -36,6 +36,11 @@ if not SECRET_TOKEN:
     print(f"\n{Colors.RED}❌ ОШИБКА: SECRET_TOKEN не найден.{Colors.END}")
     print("  Пожалуйста, проверьте ваш .env файл.")
     sys.exit(1)
+if not BASE_URL:
+    print(f"\n{Colors.RED}❌ ОШИБКА: COIN_SIFTER_URL не найден.{Colors.END}")
+    print("  Пожалуйста, проверьте ваш .env файл.")
+    sys.exit(1)
+
 
 # --- Глобальные заголовки для защищенных эндпоинтов ---
 HEADERS = {
@@ -231,17 +236,20 @@ def test_4_data_endpoints():
         print_fail(f"GET /coins/filtered/csv (КРИТИЧЕСКАЯ ОШИБКА: {e})")
         errors += 1
 
-    # --- 4.4: Formatted Symbols ---
+    # --- 4.4: Formatted Symbols (ИЗМЕНЕНИЕ) ---
     try:
         r_fmt = requests.get(f"{BASE_URL}/coins/formatted-symbols", headers=HEADERS, timeout=15)
-        if r_fmt.status_code == 200 and 'count' in r_fmt.json():
-            print_success(f"GET /coins/formatted-symbols (200 OK), Найдено: {r_fmt.json()['count']} записей")
+        
+        # (ИЗМЕНЕНО) Проверяем ключ "symbols"
+        if r_fmt.status_code == 200 and 'count' in r_fmt.json() and 'symbols' in r_fmt.json():
+            print_success(f"GET /coins/formatted-symbols (200 OK), Найдено: {r_fmt.json()['count']} записей (Ключ 'symbols' ✅)")
         else:
-            print_fail(f"GET /coins/formatted-symbols (ОШИБКА: {r_fmt.status_code})")
+            print_fail(f"GET /coins/formatted-symbols (ОШИБКА: {r_fmt.status_code}, Ключ 'symbols' НЕ НАЙДЕН)")
             errors += 1
     except Exception as e:
         print_fail(f"GET /coins/formatted-symbols (КРИТИЧЕСКАЯ ОШИБКА: {e})")
         errors += 1
+    # --- (КОНЕЦ ИЗМЕНЕНИЯ) ---
 
     if errors == 0:
         print_success("✅ Тест 4 ПРОЙДЕН.")
@@ -274,7 +282,7 @@ if __name__ == "__main__":
     print(f"{Colors.BOLD}🏁 E2E ТЕСТИРОВАНИЕ ЗАВЕРШЕНО{Colors.END}")
     
     if all(results):
-        print_success(f"ИТОГ: ВСЕ {len(results)} ТЕСТА ПРОЙДENЫ.")
+        print_success(f"ИТОG: ВСЕ {len(results)} ТЕСТА ПРОЙДENЫ.")
     else:
-        print_fail(f"ИТОГ: {results.count(False)} из {len(results)} ТЕСТОВ ПРОВАЛЕНЫ.")
+        print_fail(f"ИТОG: {results.count(False)} из {len(results)} ТЕСТОВ ПРОВАЛЕНЫ.")
     print("="*70)
