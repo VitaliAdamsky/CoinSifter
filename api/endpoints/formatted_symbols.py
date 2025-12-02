@@ -133,7 +133,8 @@ async def get_formatted_symbols():
             
             formatted_list.append({
                 "symbol": formatted_symbol,
-                "exchanges": formatted_exchanges
+                "exchanges": formatted_exchanges,
+                "category": coin.get("category")
             })
 
         if coins_filtered_by_blacklist > 0:
