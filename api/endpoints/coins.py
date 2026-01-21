@@ -7,13 +7,10 @@ from fastapi import APIRouter, HTTPException, Depends, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
 
-# --- (ИСПРАВЛЕНИЕ РЕФАКТОРИНГА) ---
 import config
-# (БЫЛО) import services 
-# (СТАЛО) Импортируем НАПРЯМУЮ
+# Импортируем сервисы напрямую
 from services.data_cache_service import get_cached_coins_data
 from services.mongo_service import load_blacklist_from_mongo_async
-# --- (КОНЕЦ ИСПРАВЛЕНИЯ) ---
 
 # Import our security module
 from api.security import verify_token
@@ -45,14 +42,14 @@ def _extract_base_symbol_from_full(full_symbol: str) -> str:
 async def get_filtered_coins():
     """
     (V3) Возвращает ВСЕ отфильтрованные монеты из КЭША (MongoDB).
-    (ИЗМЕНЕНО) Добавлена фильтрация по Черному списку.
+    Фильтрация:
+    1. Blacklist (Черный список)
+    2. BTC Correlation < 0.4 (Слабая корреляция с битком)
     """
     log_prefix = "[API /coins/filtered GET]"
     log.info(f"{log_prefix} Запрошены монеты (JSON) из кэша...")
     
     try:
-        # --- (ИЗМЕНЕНИЕ №1) ---
-        
         # 1. Получаем данные из кэша
         all_coins = await get_cached_coins_data(
             force_reload=False, 
@@ -68,31 +65,45 @@ async def get_filtered_coins():
             log.warning(f"{log_prefix} Кэш пуст.")
             raise HTTPException(status_code=404, detail="No data available in cache.")
             
-        # 3. Фильтруем по Blacklist
+        # 3. Фильтрация
         filtered_coins = []
-        coins_filtered_by_blacklist = 0
+        stats = {
+            "blacklist": 0,
+            "low_correlation": 0
+        }
         
         for coin in all_coins:
-            # (Используем 'symbol' из БД, который = full_symbol)
-            base_symbol = _extract_base_symbol_from_full(coin['symbol']) 
-            if base_symbol not in blacklist:
-                filtered_coins.append(coin)
-            else:
-                coins_filtered_by_blacklist += 1
+            # --- ПРОВЕРКА 1: Blacklist ---
+            base_symbol = _extract_base_symbol_from_full(coin.get('symbol', ''))
+            if base_symbol in blacklist:
+                stats["blacklist"] += 1
+                continue
+
+            # --- ПРОВЕРКА 2: BTC Correlation < 0.4 ---
+            # (Метрика из calculator.py: 'btc_corr_1d_w30')
+            btc_corr = coin.get('btc_corr_1d_w30')
+            
+            # Если корреляции нет (None) или она меньше 0.4 -> пропускаем
+            if btc_corr is None or btc_corr < 0.4:
+                stats["low_correlation"] += 1
+                continue
+
+            # Если всё ок -> добавляем
+            filtered_coins.append(coin)
         
         count_after = len(filtered_coins)
 
-        log.info(f"{log_prefix} Blacklist filtering: {len(all_coins)} -> {count_after} coins.")
-        if coins_filtered_by_blacklist > 0:
-            log.warning(f"{log_prefix} 🚫 Отсеяно по Черному списку: {coins_filtered_by_blacklist} монет.")
-            
-        # --- (КОНЕЦ ИЗМЕНЕНИЯ №1) ---
+        log.info(f"{log_prefix} Filtering result: {len(all_coins)} -> {count_after} coins.")
+        if stats["blacklist"] > 0:
+            log.warning(f"{log_prefix} 🚫 Отсеяно по Черному списку: {stats['blacklist']}")
+        if stats["low_correlation"] > 0:
+            log.warning(f"{log_prefix} 📉 Отсеяно по Correlation (<0.4): {stats['low_correlation']}")
             
         log.info(f"{log_prefix} ✅ Успешно. Возвращаем {count_after} монет.")
         
         return JSONResponse(content=jsonable_encoder({
             "count": count_after,
-            "data": filtered_coins # Возвращаем отфильтрованный список
+            "data": filtered_coins
         }))
         
     except HTTPException:
@@ -109,7 +120,9 @@ async def get_filtered_coins():
 async def get_filtered_coins_csv():
     """
     (V3) Возвращает ВСЕ монеты из КЭША (MongoDB) в CSV формате.
-    (Логика здесь УЖЕ БЫЛА ПРАВИЛЬНОЙ и фильтровала по ЧС)
+    Фильтрация:
+    1. Blacklist
+    2. BTC Correlation < 0.4
     """
     log_prefix = "[API /coins/filtered/csv GET]"
     log.info(f"{log_prefix} Запрошены монеты (CSV)...")
@@ -121,7 +134,7 @@ async def get_filtered_coins_csv():
             log_prefix=f"{log_prefix} [Cache]"
         )
 
-        # 2. Получаем Черный список (для фильтрации на лету)
+        # 2. Получаем Черный список
         blacklist = await load_blacklist_from_mongo_async(
             log_prefix=f"{log_prefix} [Blacklist]"
         )
@@ -130,22 +143,35 @@ async def get_filtered_coins_csv():
             log.warning(f"{log_prefix} Кэш пуст.")
             return Response(content="No data available in cache", status_code=404, media_type="text/plain")
 
-        # 3. Фильтруем по Blacklist
+        # 3. Фильтрация
         filtered_coins = []
-        coins_filtered_by_blacklist = 0
+        stats = {
+            "blacklist": 0,
+            "low_correlation": 0
+        }
         
         for coin in all_coins:
-            base_symbol = _extract_base_symbol_from_full(coin['symbol'])
-            if base_symbol not in blacklist:
-                filtered_coins.append(coin)
-            else:
-                coins_filtered_by_blacklist += 1
+            # --- ПРОВЕРКА 1: Blacklist ---
+            base_symbol = _extract_base_symbol_from_full(coin.get('symbol', ''))
+            if base_symbol in blacklist:
+                stats["blacklist"] += 1
+                continue
+            
+            # --- ПРОВЕРКА 2: BTC Correlation < 0.4 ---
+            btc_corr = coin.get('btc_corr_1d_w30')
+            if btc_corr is None or btc_corr < 0.4:
+                stats["low_correlation"] += 1
+                continue
+                
+            filtered_coins.append(coin)
         
         count_after = len(filtered_coins)
         
-        log.info(f"{log_prefix} Blacklist filtering: {len(all_coins)} -> {count_after} coins.")
-        if coins_filtered_by_blacklist > 0:
-            log.warning(f"{log_prefix} 🚫 Отсеяно по Черному списку: {coins_filtered_by_blacklist} монет.")
+        log.info(f"{log_prefix} Filtering result: {len(all_coins)} -> {count_after} coins.")
+        if stats["blacklist"] > 0:
+            log.warning(f"{log_prefix} 🚫 Отсеяно по Черному списку: {stats['blacklist']}")
+        if stats["low_correlation"] > 0:
+            log.warning(f"{log_prefix} 📉 Отсеяно по Correlation (<0.4): {stats['low_correlation']}")
         
         if not filtered_coins: 
             log.warning(f"{log_prefix} No data after filtering.")
